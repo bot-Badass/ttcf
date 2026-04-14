@@ -1,92 +1,96 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from pathlib import Path
+from unittest.mock import patch
 
 import run
-from src.ingest import IngestBatchResult
-from src.orchestrator import OrchestrationResult, OrchestrationSummary
-from src.processor import ProcessorBatchResult
-from src.validator import ValidationBatchResult
+from src.reddit_intake import PipelineRunResult
 
 
 class RunEntrypointTests(unittest.TestCase):
-    def test_run_initializes_manifest_store_exactly_once(self) -> None:
-        manifest_store = Mock()
+    def test_logging_is_configured_before_ensure_directories_exist(self) -> None:
+        call_order: list[str] = []
 
         with (
-            patch("run.ensure_directories_exist"),
-            patch("run.configure_logging"),
-            patch("run.ManifestStore", return_value=manifest_store) as mock_manifest_store,
-            patch("run.run_pipeline", return_value=self._result(failed_processing=0)),
-            patch("builtins.print"),
+            patch("run.configure_logging", side_effect=lambda: call_order.append("configure_logging")),
+            patch("run.ensure_directories_exist", side_effect=lambda: call_order.append("ensure_directories_exist")),
         ):
-            exit_code = run.main()
+            run.main([])
 
-        self.assertEqual(exit_code, 0)
-        mock_manifest_store.assert_called_once_with(run.config.MANIFEST_PATH)
-        manifest_store.initialize.assert_called_once_with()
+        self.assertEqual(call_order[:2], ["configure_logging", "ensure_directories_exist"])
 
-    def test_run_calls_orchestrator(self) -> None:
-        manifest_store = Mock()
-
+    def test_reddit_mode_requires_background_video_path(self) -> None:
         with (
-            patch("run.ensure_directories_exist"),
             patch("run.configure_logging"),
-            patch("run.ManifestStore", return_value=manifest_store),
-            patch("run.run_pipeline", return_value=self._result(failed_processing=0)) as mock_run_pipeline,
-            patch("builtins.print"),
-        ):
-            run.main()
-
-        mock_run_pipeline.assert_called_once_with(
-            input_dir=run.config.INPUT_DIR,
-            approved_dir=run.config.APPROVED_DIR,
-            approved_sources_path=run.config.APPROVED_SOURCES_PATH,
-            rejected_dir=run.config.REJECTED_DIR,
-            processed_dir=run.config.PROCESSED_DIR,
-            manifest_store=manifest_store,
-        )
-
-    def test_exit_code_zero_on_no_failed_processing(self) -> None:
-        with (
             patch("run.ensure_directories_exist"),
-            patch("run.configure_logging"),
-            patch("run.ManifestStore", return_value=Mock()),
-            patch("run.run_pipeline", return_value=self._result(failed_processing=0)),
-            patch("builtins.print"),
+            patch("run.config.BACKGROUND_VIDEO_PATH", ""),
+            patch("sys.stderr.write") as stderr_write,
         ):
-            exit_code = run.main()
-
-        self.assertEqual(exit_code, 0)
-
-    def test_exit_code_one_when_failed_processing_exists(self) -> None:
-        with (
-            patch("run.ensure_directories_exist"),
-            patch("run.configure_logging"),
-            patch("run.ManifestStore", return_value=Mock()),
-            patch("run.run_pipeline", return_value=self._result(failed_processing=1)),
-            patch("builtins.print"),
-        ):
-            exit_code = run.main()
+            exit_code = run.main(["--reddit"])
 
         self.assertEqual(exit_code, 1)
+        stderr_write.assert_called()
 
-    def _result(self, failed_processing: int) -> OrchestrationResult:
-        return OrchestrationResult(
-            ingest_batch_result=IngestBatchResult(items=(), batch_errors=()),
-            validation_batch_result=ValidationBatchResult(results=()),
-            processor_batch_result=ProcessorBatchResult(results=()),
-            summary=OrchestrationSummary(
-                ingested=0,
-                skipped_ingest=0,
-                failed_ingest=0,
-                valid=0,
-                rejected=0,
-                processed=0,
-                failed_processing=failed_processing,
-            ),
-        )
+    def test_reddit_mode_logs_stage_errors_and_returns_one(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            background_video_path = Path(temp_dir_name) / "background.mp4"
+            background_video_path.write_bytes(b"video")
+
+            with (
+                patch("run.configure_logging"),
+                patch("run.ensure_directories_exist"),
+                patch("run.config.validate_runtime_config"),
+                patch(
+                    "run.run_full_pipeline",
+                    return_value=PipelineRunResult(
+                        fetched=0,
+                        accepted=0,
+                        persisted=0,
+                        sent_to_telegram=0,
+                        processed_updates=0,
+                        translated=0,
+                        rendered=0,
+                        enqueued=0,
+                        stage_errors=("fetch/persist: boom",),
+                    ),
+                ),
+                patch("run.LOGGER") as logger,
+                patch("builtins.print"),
+            ):
+                exit_code = run.main(
+                    ["--reddit", "--background-video-path", str(background_video_path)]
+                )
+
+        self.assertEqual(exit_code, 1)
+        logger.error.assert_any_call("Reddit pipeline stage error: %s", "fetch/persist: boom")
+
+    def test_bot_mode_requires_polling_enabled(self) -> None:
+        with (
+            patch("run.configure_logging"),
+            patch("run.ensure_directories_exist"),
+            patch("run.config.TELEGRAM_POLLING_ENABLED", False),
+            patch("sys.stderr.write") as stderr_write,
+        ):
+            exit_code = run.main(["--bot"])
+
+        self.assertEqual(exit_code, 1)
+        stderr_write.assert_called()
+
+    def test_bot_mode_starts_without_background_video_path(self) -> None:
+        with (
+            patch("run.configure_logging"),
+            patch("run.ensure_directories_exist"),
+            patch("run.config.TELEGRAM_POLLING_ENABLED", True),
+            patch("run.config.BACKGROUND_VIDEO_PATH", ""),
+            patch("run.config.validate_runtime_config"),
+            patch("run.run_polling_loop") as polling_loop,
+        ):
+            exit_code = run.main(["--bot"])
+
+        self.assertEqual(exit_code, 0)
+        polling_loop.assert_called_once_with(background_video_path=None)
 
 
 if __name__ == "__main__":

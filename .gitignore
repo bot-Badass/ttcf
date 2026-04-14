@@ -1,6 +1,42 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets — NEVER commit
 .env
-.venv
-*.log
+
+# macOS
+.DS_Store
+
+# Editor
+.claude/
+
+# Runtime data — large files and machine state
+data/advice/
+data/approved/
+data/inbox/
+data/processed/
+data/rejected/
 data/logs/*.log
+data/manifests/*.sqlite3
+data/manifests/*.sqlite3-shm
+data/manifests/*.sqlite3-wal
+data/manifests/advice_reviews.json
+data/manifests/voice_sessions.json
+data/manifests/reddit_story_reviews.json
+
+# Misc
+*.sqlite3-shm
+*.sqlite3-wal
+render_session.py
+tiktok_content_plan.md
+
+# Preview/temp files
+hook_preview*.mp4
