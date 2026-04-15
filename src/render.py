@@ -28,6 +28,9 @@ def render_story_video(
     part_number: int | None = None,
     total_parts: int | None = None,
     series_id: str | None = None,
+    hook_bg_override: str | None = None,
+    hook_accent_override: str | None = None,
+    hook_brand_override: str | None = None,
     *,
     ffmpeg_path: str = config.FFMPEG_PATH,
     run_command: CommandRunnerBoundary | None = None,
@@ -63,6 +66,9 @@ def render_story_video(
                 series_id=series_id,
                 part_number=part_number,
                 background_video_path=background_video_path,
+                hook_bg_override=hook_bg_override,
+                hook_accent_override=hook_accent_override,
+                hook_brand_override=hook_brand_override,
             )
             _render_body(
                 background_video_path=background_video_path,
@@ -157,6 +163,9 @@ def _render_hook_frame(
     series_id: str | None = None,
     part_number: int | None = None,
     background_video_path: Path | None = None,
+    hook_bg_override: str | None = None,
+    hook_accent_override: str | None = None,
+    hook_brand_override: str | None = None,
 ) -> None:
     """Route to V2 or classic hook frame based on HOOK_FRAME_LAYOUT config."""
     if config.HOOK_FRAME_LAYOUT.strip().lower() == "v2":
@@ -168,6 +177,9 @@ def _render_hook_frame(
             series_id=series_id,
             part_number=part_number,
             background_video_path=background_video_path,
+            hook_bg_override=hook_bg_override,
+            hook_accent_override=hook_accent_override,
+            hook_brand_override=hook_brand_override,
         )
     else:
         _render_hook_frame_classic(
@@ -186,6 +198,9 @@ def _render_hook_frame_v2(
     series_id: str | None = None,
     part_number: int | None = None,
     background_video_path: Path | None = None,
+    hook_bg_override: str | None = None,
+    hook_accent_override: str | None = None,
+    hook_brand_override: str | None = None,
 ) -> None:
     """V2 hook frame: moving video background (darkened) + overlay text/bars.
 
@@ -205,7 +220,6 @@ def _render_hook_frame_v2(
     duration  = config.HOOK_FRAME_DURATION
     font_file = config.HOOK_FRAME_FONT_FILE
     font_opt  = f":fontfile='{font_file}'" if font_file else ""
-    brand     = config.HOOK_FRAME_BRAND_LABEL.strip()
     category  = config.HOOK_FRAME_CATEGORY.strip().upper()
     cat_fg    = config.HOOK_FRAME_CATEGORY_FG.strip()
 
@@ -214,10 +228,17 @@ def _render_hook_frame_v2(
     theme  = _SERIES_THEMES.get(sid, _SERIES_THEME_DEFAULT)
     bg     = theme["bg"]
     accent = theme["accent"]
-    if config.HOOK_FRAME_BG_COLOR not in ("0x0a0a0a", "0x111827"):
+    # Priority: channel override > .env explicit > series theme
+    if hook_bg_override:
+        bg = hook_bg_override
+    elif config.HOOK_FRAME_BG_COLOR not in ("0x0a0a0a", "0x111827"):
         bg = config.HOOK_FRAME_BG_COLOR
-    if config.HOOK_FRAME_ACCENT_COLOR not in ("0xFF3B30", "0xFBBF24"):
+    if hook_accent_override:
+        accent = hook_accent_override
+    elif config.HOOK_FRAME_ACCENT_COLOR not in ("0xFF3B30", "0xFBBF24"):
         accent = config.HOOK_FRAME_ACCENT_COLOR
+    # Brand: override > config
+    brand = hook_brand_override if hook_brand_override is not None else config.HOOK_FRAME_BRAND_LABEL.strip()
     cat_bg = config.HOOK_FRAME_CATEGORY_BG.strip() or accent
 
     # --- Level 2: part layout ---
@@ -225,10 +246,20 @@ def _render_hook_frame_v2(
     layout = _PART_LAYOUTS.get(pn, "left")
 
     # --- text wrapping ---
-    wrapped = _wrap_hook_text(hook_text, max_chars_per_line=12)
-    txt_fd, txt_path_str = tempfile.mkstemp(suffix=".txt")
+    # Finance layout uses wider lines (centred text looks better with fewer breaks)
+    # Detect finance channel: brand override takes priority over config
+    _brand_check = (hook_brand_override if hook_brand_override is not None else config.HOOK_FRAME_BRAND_LABEL or "").upper()
+    is_finance_layout = _brand_check == "MONEY UA"
+    chars_per_line = 16 if is_finance_layout else 12
+    wrapped = _wrap_hook_text(hook_text, max_chars_per_line=chars_per_line)
+    # NOTE: textfile= in ffmpeg does NOT support %% escaping unlike text=.
+    # A bare % in textfile causes "Stray %" and silent text skip.
+    # Solution: strip % entirely from hook text before writing to file.
+    wrapped = wrapped.replace("%", "")
+    # Write to a stable path next to output — avoids mkstemp path escaping issues.
+    txt_path_str = str(output_path.parent / "_hook_text.txt")
     try:
-        with _os.fdopen(txt_fd, "w", encoding="utf-8") as f:
+        with open(txt_path_str, "w", encoding="utf-8") as f:
             f.write(wrapped)
         txt_esc = _escape_ffmpeg_filter_path(Path(txt_path_str))
 
@@ -247,51 +278,109 @@ def _render_hook_frame_v2(
         Y_SEP       = Y_MAIN + 330
         SEP_W       = 100
 
-        # --- build overlay filter chain (drawboxes + drawtexts) ---
+        # --- build overlay filter chain ---
+        # Finance channel (MONEY UA brand) uses a different layout:
+        # top+bottom bars + centred text + outline pill.
+        # All other channels use the V2 left-bar layout.
+        is_finance = is_finance_layout
+
         overlays: list[str] = []
 
-        if layout == "left":
-            overlays.append(f"drawbox=x=60:y=0:w=6:h=1920:color={accent}@1.0:t=fill")
-        elif layout == "top":
+        if is_finance:
+            # === Finance layout: top+bottom bars + centred text + outline pill ===
+            # Top bar: thick + thin
             overlays.append(f"drawbox=x=0:y=0:w=1080:h=10:color={accent}@1.0:t=fill")
-            overlays.append(f"drawbox=x=0:y=0:w=8:h=960:color={accent}@0.6:t=fill")
-        elif layout == "left_corner":
-            overlays.append(f"drawbox=x=60:y=0:w=6:h=1920:color={accent}@1.0:t=fill")
-            overlays.append(f"drawbox=x=60:y=1760:w=200:h=8:color={accent}@0.8:t=fill")
-        elif layout == "both":
-            overlays.append(f"drawbox=x=60:y=0:w=6:h=1920:color={accent}@1.0:t=fill")
-            overlays.append(f"drawbox=x=1008:y=0:w=12:h=1920:color={accent}@0.8:t=fill")
+            overlays.append(f"drawbox=x=0:y=10:w=1080:h=3:color={accent}@0.3:t=fill")
+            # Bottom bar: thick + thin
+            overlays.append(f"drawbox=x=0:y=1907:w=1080:h=3:color={accent}@0.3:t=fill")
+            overlays.append(f"drawbox=x=0:y=1910:w=1080:h=10:color={accent}@1.0:t=fill")
 
-        if category:
-            # Кирилиця ширша за ASCII — використовуємо 26px на символ
-            pill_w  = max(len(category) * 26 + PILL_PAD_X * 2, 160)
+            # Brand label centred top — larger and lower
+            if brand:
+                brand_esc = brand.replace("'", "\\\\'").replace(":", "\\\\:")
+                overlays.append(
+                    f"drawtext=text='{brand_esc}'{font_opt}"
+                    f":fontsize=42:fontcolor={accent}"
+                    f":x=(w-text_w)/2:y=120:fix_bounds=1"
+                )
+
+            # Separator line — centred, short
+            Y_FIN_SEP = 580
             overlays.append(
-                f"drawbox=x={X_LEFT}:y={Y_PILL}:w={pill_w}:h={PILL_H}"
-                f":color={cat_bg}@1.0:t=fill"
-            )
-            cat_esc = category.replace("'", "\\\\'").replace(":", "\\\\:")
-            overlays.append(
-                f"drawtext=text='{cat_esc}'{font_opt}"
-                f":fontsize={FONTSIZE_SM}:fontcolor={cat_fg}"
-                f":x={X_LEFT + PILL_PAD_X}:y={Y_PILL_TXT}:fix_bounds=1"
+                f"drawbox=x=490:y={Y_FIN_SEP}:w=100:h=5"
+                f":color={accent}@1.0:t=fill"
             )
 
-        overlays.append(
-            f"drawtext=textfile='{txt_esc}'{font_opt}"
-            f":fontsize={FONTSIZE}:fontcolor=white"
-            f":x={X_LEFT}:y={Y_MAIN}:line_spacing=12"
-            f":borderw=3:bordercolor=black@0.6:fix_bounds=1"
-        )
-        overlays.append(
-            f"drawbox=x={X_LEFT}:y={Y_SEP}:w={SEP_W}:h=6:color={accent}@1.0:t=fill"
-        )
-        if brand:
-            brand_esc = brand.replace("'", "\\\\'").replace(":", "\\\\:")
+            # Main hook text — centred with fixed left margin
+            # x=(w-text_w)/2 can fail with textfile= in some ffmpeg builds.
+            # Use fixed x=60 with line_spacing so text sits visually centred.
             overlays.append(
-                f"drawtext=text='{brand_esc}'{font_opt}"
-                f":fontsize={FONTSIZE_BR}:fontcolor=white@0.35"
-                f":x={X_LEFT}:y={Y_BRAND}:fix_bounds=1"
+                f"drawtext=textfile='{txt_esc}'{font_opt}"
+                f":fontsize={FONTSIZE}:fontcolor=white"
+                f":x=60:y={Y_FIN_SEP + 24}:line_spacing=14"
+                f":borderw=3:bordercolor=black@0.6:fix_bounds=1"
             )
+
+            # Category pill — outline style centred below text
+            if category:
+                pill_w = max(len(category) * 26 + PILL_PAD_X * 2, 160)
+                pill_x = (1080 - pill_w) // 2
+                Y_FIN_PILL = 1130
+                t = 3
+                overlays.append(f"drawbox=x={pill_x}:y={Y_FIN_PILL}:w={pill_w}:h={t}:color={accent}@1.0:t=fill")
+                overlays.append(f"drawbox=x={pill_x}:y={Y_FIN_PILL+PILL_H-t}:w={pill_w}:h={t}:color={accent}@1.0:t=fill")
+                overlays.append(f"drawbox=x={pill_x}:y={Y_FIN_PILL}:w={t}:h={PILL_H}:color={accent}@1.0:t=fill")
+                overlays.append(f"drawbox=x={pill_x+pill_w-t}:y={Y_FIN_PILL}:w={t}:h={PILL_H}:color={accent}@1.0:t=fill")
+                cat_esc = category.replace("'", "\\\\'").replace(":", "\\\\:")
+                overlays.append(
+                    f"drawtext=text='{cat_esc}'{font_opt}"
+                    f":fontsize={FONTSIZE_SM}:fontcolor={accent}"
+                    f":x=(w-text_w)/2:y={Y_FIN_PILL + 14}:fix_bounds=1"
+                )
+
+        else:
+            # === Standard V2 layout: left bar + pill + left-aligned text ===
+            if layout == "left":
+                overlays.append(f"drawbox=x=60:y=0:w=6:h=1920:color={accent}@1.0:t=fill")
+            elif layout == "top":
+                overlays.append(f"drawbox=x=0:y=0:w=1080:h=10:color={accent}@1.0:t=fill")
+                overlays.append(f"drawbox=x=0:y=0:w=8:h=960:color={accent}@0.6:t=fill")
+            elif layout == "left_corner":
+                overlays.append(f"drawbox=x=60:y=0:w=6:h=1920:color={accent}@1.0:t=fill")
+                overlays.append(f"drawbox=x=60:y=1760:w=200:h=8:color={accent}@0.8:t=fill")
+            elif layout == "both":
+                overlays.append(f"drawbox=x=60:y=0:w=6:h=1920:color={accent}@1.0:t=fill")
+                overlays.append(f"drawbox=x=1008:y=0:w=12:h=1920:color={accent}@0.8:t=fill")
+
+            if category:
+                pill_w  = max(len(category) * 26 + PILL_PAD_X * 2, 160)
+                overlays.append(
+                    f"drawbox=x={X_LEFT}:y={Y_PILL}:w={pill_w}:h={PILL_H}"
+                    f":color={cat_bg}@1.0:t=fill"
+                )
+                cat_esc = category.replace("'", "\\\\'").replace(":", "\\\\:")
+                overlays.append(
+                    f"drawtext=text='{cat_esc}'{font_opt}"
+                    f":fontsize={FONTSIZE_SM}:fontcolor={cat_fg}"
+                    f":x={X_LEFT + PILL_PAD_X}:y={Y_PILL_TXT}:fix_bounds=1"
+                )
+
+            overlays.append(
+                f"drawtext=textfile='{txt_esc}'{font_opt}"
+                f":fontsize={FONTSIZE}:fontcolor=white"
+                f":x={X_LEFT}:y={Y_MAIN}:line_spacing=12"
+                f":borderw=3:bordercolor=black@0.6:fix_bounds=1"
+            )
+            overlays.append(
+                f"drawbox=x={X_LEFT}:y={Y_SEP}:w={SEP_W}:h=6:color={accent}@1.0:t=fill"
+            )
+            if brand:
+                brand_esc = brand.replace("'", "\\\\'").replace(":", "\\\\:")
+                overlays.append(
+                    f"drawtext=text='{brand_esc}'{font_opt}"
+                    f":fontsize={FONTSIZE_BR}:fontcolor=white@0.35"
+                    f":x={X_LEFT}:y={Y_BRAND}:fix_bounds=1"
+                )
 
         overlay_chain = ",".join(overlays)
 

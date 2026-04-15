@@ -50,8 +50,13 @@ from src.render import (  # noqa: E402
 def _run(cmd: list[str], timeout: int) -> subprocess.CompletedProcess:
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
-        print("❌ ffmpeg error:\n", result.stderr[-2000:], file=sys.stderr)
+        print("\n❌ ffmpeg error (returncode=%d):" % result.returncode, file=sys.stderr)
+        print(result.stderr[-3000:], file=sys.stderr)
         sys.exit(1)
+    # Show ffmpeg warnings even on success (helps debug silent rendering issues)
+    if os.environ.get("PREVIEW_DEBUG"):
+        if result.stderr:
+            print("[ffmpeg stderr]:", result.stderr[-1000:], file=sys.stderr)
     return result
 
 
@@ -63,6 +68,9 @@ def render_one(
     category: str,
     layout: str | None,
     bg_video: Path | None = None,
+    hook_bg_override: str | None = None,
+    hook_accent_override: str | None = None,
+    hook_brand_override: str | None = None,
 ) -> None:
     # Apply overrides
     if category:
@@ -85,6 +93,9 @@ def render_one(
         series_id=series_id,
         part_number=part_number,
         background_video_path=bg_video,
+        hook_bg_override=hook_bg_override,
+        hook_accent_override=hook_accent_override,
+        hook_brand_override=hook_brand_override,
     )
 
 
@@ -119,6 +130,7 @@ def main() -> None:
     parser.add_argument("--out", default="hook_preview.mp4", help="Output file (single render)")
     parser.add_argument("--no-open", action="store_true", help="Do not open files after render")
     parser.add_argument("--bg-video", default=None, help="Path to background video (overrides .env BACKGROUND_VIDEO_PATH)")
+    parser.add_argument("--channel", choices=list(config.CHANNEL_PROFILES.keys()), default=None, help="Channel profile: law or finance (applies brand colors automatically)")
     args = parser.parse_args()
 
     # Apply category to config so it is visible inside render functions
@@ -128,6 +140,17 @@ def main() -> None:
         config.HOOK_FRAME_LAYOUT = args.layout  # type: ignore[attr-defined]
 
     active_layout = config.HOOK_FRAME_LAYOUT.strip().lower()
+
+    # Resolve channel profile overrides
+    hook_bg_override: str | None = None
+    hook_accent_override: str | None = None
+    hook_brand_override: str | None = None
+    if args.channel:
+        profile = config.CHANNEL_PROFILES[args.channel]
+        hook_bg_override = profile.get("hook_bg")
+        hook_accent_override = profile.get("hook_accent")
+        hook_brand_override = profile.get("hook_brand")
+        print(f"   channel  : {profile['label']} (bg={hook_bg_override} accent={hook_accent_override})")
 
     # Resolve background video path
     bg_video: Path | None = None
@@ -148,28 +171,25 @@ def main() -> None:
     rendered: list[Path] = []
 
     if args.all_series:
-        # Render part 1 for every series A-I
         series_keys = list(_SERIES_THEMES.keys())
         print(f"Rendering {len(series_keys)} series themes (part=1 each)...\n")
         for sid in series_keys:
             out = Path(f"hook_preview_series_{sid}.mp4")
-            render_one(args.text, out, sid, 1, args.category, args.layout, bg_video)
+            render_one(args.text, out, sid, 1, args.category, args.layout, bg_video, hook_bg_override, hook_accent_override, hook_brand_override)
             rendered.append(out)
 
     elif args.all_parts:
-        # Render parts 1-4 for the given series
         series = args.series or "A"
         parts = sorted(_PART_LAYOUTS.keys())
         print(f"Rendering {len(parts)} part layouts for series={series}...\n")
         for pn in parts:
             out = Path(f"hook_preview_part{pn}.mp4")
-            render_one(args.text, out, series, pn, args.category, args.layout, bg_video)
+            render_one(args.text, out, series, pn, args.category, args.layout, bg_video, hook_bg_override, hook_accent_override, hook_brand_override)
             rendered.append(out)
 
     else:
-        # Single render
         out = Path(args.out)
-        render_one(args.text, out, args.series, args.part, args.category, args.layout, bg_video)
+        render_one(args.text, out, args.series, args.part, args.category, args.layout, bg_video, hook_bg_override, hook_accent_override, hook_brand_override)
         rendered.append(out)
 
     print(f"\n✅ Done — {len(rendered)} file(s) rendered")
