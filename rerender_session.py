@@ -113,22 +113,28 @@ def main() -> None:
     if topic is None:
         print(f"⚠️  Topic {session.topic_id} not found in any plan — series theme will use default")
         series_id = None
-    else:
+
+    hook_bg_override: str | None = None
+    hook_accent_override: str | None = None
+    hook_brand_override: str | None = None
+
+    if topic is not None:
         series_id = topic.series_id
         print(f"   series_id: {series_id} ({topic.series_title})")
-        # Auto-detect category from channel profile based on which plan the topic came from
+        # Auto-detect channel profile based on which plan the topic came from
         for channel_key, profile in config.CHANNEL_PROFILES.items():
-            for plan_path in [config.CONTENT_PLAN_PATH, config.DATA_DIR / "content_plan_moneyua.json"]:
-                if plan_path.is_file():
-                    t = get_topic_by_id(session.topic_id, plan_path)
-                    if t is not None:
-                        categories = profile.get("series_categories", {})
-                        if plan_path == profile.get("plan_path"):
-                            category = categories.get(series_id.upper(), "")
-                            if category:
-                                config.HOOK_FRAME_CATEGORY = category
-                                print(f"   category : {category} (auto from {channel_key} profile)")
-                            break
+            if get_topic_by_id(session.topic_id, profile["plan_path"]) is not None:
+                # Category
+                category = profile.get("series_categories", {}).get(series_id.upper(), "")
+                if category:
+                    config.HOOK_FRAME_CATEGORY = category
+                    print(f"   category : {category} (auto from {channel_key} profile)")
+                # Brand colors
+                hook_bg_override = profile.get("hook_bg")
+                hook_accent_override = profile.get("hook_accent")
+                hook_brand_override = profile.get("hook_brand", "")
+                print(f"   channel  : {profile['label']} (bg={hook_bg_override} accent={hook_accent_override} brand={hook_brand_override!r})")
+                break
 
     print(f"\n🎬 Starting re-render of {len(session.micro_series.parts)} parts...\n")
 
@@ -170,6 +176,9 @@ def main() -> None:
                 part_number=part.part_number,
                 total_parts=part.total_parts,
                 series_id=series_id,
+                hook_bg_override=hook_bg_override,
+                hook_accent_override=hook_accent_override,
+                hook_brand_override=hook_brand_override,
             )
             print(f"    ✅ Done ({output_path.stat().st_size // 1024 // 1024} MB)\n")
             results.append(output_path)
