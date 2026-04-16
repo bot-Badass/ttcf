@@ -149,6 +149,23 @@ def _channel_prompt_path(chat_id: str) -> Path:
     return _get_channel_profile(chat_id)["prompt_path"]
 
 
+def _channel_hook_overrides(chat_id: str) -> dict:
+    """Return hook frame colour overrides for the active channel profile."""
+    profile = _get_channel_profile(chat_id)
+    return {
+        "hook_bg_override": profile.get("hook_bg"),
+        "hook_accent_override": profile.get("hook_accent"),
+        "hook_brand_override": profile.get("hook_brand"),
+    }
+
+
+def _channel_category(chat_id: str, series_id: str) -> str:
+    """Return category pill label for the given series_id in the active channel."""
+    profile = _get_channel_profile(chat_id)
+    categories: dict[str, str] = profile.get("series_categories", {})
+    return categories.get(series_id.upper(), "")
+
+
 def run_polling_loop(
     *,
     background_video_path: Path | None,
@@ -444,11 +461,14 @@ def _handle_reply_message(
                     return
                 _edit_factory(chat_id, *_build_rendering_message(topic), edit_message)
                 try:
+                    # Set category pill for hook frame based on topic series.
+                    config.HOOK_FRAME_CATEGORY = _channel_category(chat_id, topic.series_id)
                     result = receive_operator_scripts(
                         review_id,
                         raw_response,
                         topic,
                         plan_path=_channel_plan_path(chat_id),
+                        **_channel_hook_overrides(chat_id),
                     )
                 except AdvicePipelineError as exc:
                     send_message(
@@ -1215,6 +1235,10 @@ def _render_and_send_voice_session(
         _edit_factory(chat_id, *_build_rendering_message(topic), edit_message)
 
     try:
+        # Set category pill based on session topic series.
+        topic_for_cat = _get_topic_by_id_safe(session.topic_id, chat_id)
+        if topic_for_cat is not None:
+            config.HOOK_FRAME_CATEGORY = _channel_category(chat_id, topic_for_cat.series_id)
         results = render_voice_session(session)
     except AdvicePipelineError as exc:
         send_message(chat_id, f"❌ Помилка рендеру: {exc}", None)

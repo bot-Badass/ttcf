@@ -116,6 +116,19 @@ def main() -> None:
     else:
         series_id = topic.series_id
         print(f"   series_id: {series_id} ({topic.series_title})")
+        # Auto-detect category from channel profile based on which plan the topic came from
+        for channel_key, profile in config.CHANNEL_PROFILES.items():
+            for plan_path in [config.CONTENT_PLAN_PATH, config.DATA_DIR / "content_plan_moneyua.json"]:
+                if plan_path.is_file():
+                    t = get_topic_by_id(session.topic_id, plan_path)
+                    if t is not None:
+                        categories = profile.get("series_categories", {})
+                        if plan_path == profile.get("plan_path"):
+                            category = categories.get(series_id.upper(), "")
+                            if category:
+                                config.HOOK_FRAME_CATEGORY = category
+                                print(f"   category : {category} (auto from {channel_key} profile)")
+                            break
 
     print(f"\n🎬 Starting re-render of {len(session.micro_series.parts)} parts...\n")
 

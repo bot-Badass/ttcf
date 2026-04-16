@@ -250,6 +250,9 @@ def render_micro_series(
     tts_generator: Callable[[str, Path, str], Path] | None = None,
     subtitle_generator: SubtitleBoundary | None = None,
     renderer: RenderBoundary | None = None,
+    hook_bg_override: str | None = None,
+    hook_accent_override: str | None = None,
+    hook_brand_override: str | None = None,
 ) -> tuple[AdviceRenderResult, ...]:
     """Render each part of the micro-series as a separate video.
 
@@ -304,6 +307,9 @@ def render_micro_series(
                 part.part_number,
                 part.total_parts,
                 micro_series.topic_id[:1].upper() if micro_series.topic_id else None,
+                hook_bg_override,
+                hook_accent_override,
+                hook_brand_override,
             )
         except RenderError as exc:
             LOGGER.error("Render failed for part %d/%d: %s", part.part_number, part.total_parts, exc)
@@ -346,6 +352,9 @@ def receive_operator_scripts(
     subtitle_generator: SubtitleBoundary | None = None,
     renderer: RenderBoundary | None = None,
     voice_mode: bool = config.VOICE_MODE,
+    hook_bg_override: str | None = None,
+    hook_accent_override: str | None = None,
+    hook_brand_override: str | None = None,
 ) -> tuple[AdviceRenderResult, ...] | AdviceVoiceSession:
     """Full pipeline for multi-script AI response.
 
@@ -392,6 +401,9 @@ def receive_operator_scripts(
             micro_series=micro_series,
             background_video_path=background_video_path,
             store_path=config.VOICE_SESSION_STORE_PATH,
+            hook_bg_override=hook_bg_override,
+            hook_accent_override=hook_accent_override,
+            hook_brand_override=hook_brand_override,
         )
         LOGGER.info(
             "Voice session created via receive_operator_scripts: review_id=%s session_id=%s",
@@ -406,6 +418,9 @@ def receive_operator_scripts(
         tts_generator=tts_generator,
         subtitle_generator=subtitle_generator,
         renderer=renderer,
+        hook_bg_override=hook_bg_override,
+        hook_accent_override=hook_accent_override,
+        hook_brand_override=hook_brand_override,
     )
 
     now = _utc_now()
@@ -860,6 +875,9 @@ class AdviceVoiceSession:
     background_video_path: Path
     created_at: str
     updated_at: str
+    hook_bg_override: str | None = None
+    hook_accent_override: str | None = None
+    hook_brand_override: str | None = None
 
 
 def _serialize_voice_session(s: AdviceVoiceSession) -> dict:
@@ -888,6 +906,9 @@ def _serialize_voice_session(s: AdviceVoiceSession) -> dict:
         "background_video_path": str(s.background_video_path),
         "created_at": s.created_at,
         "updated_at": s.updated_at,
+        "hook_bg_override": s.hook_bg_override,
+        "hook_accent_override": s.hook_accent_override,
+        "hook_brand_override": s.hook_brand_override,
     }
 
 
@@ -924,6 +945,9 @@ def _deserialize_voice_session(data: dict) -> AdviceVoiceSession:
         background_video_path=Path(data["background_video_path"]),
         created_at=data["created_at"],
         updated_at=data["updated_at"],
+        hook_bg_override=data.get("hook_bg_override"),
+        hook_accent_override=data.get("hook_accent_override"),
+        hook_brand_override=data.get("hook_brand_override"),
     )
 
 
@@ -980,6 +1004,9 @@ def create_voice_session(
     micro_series: AdviceMicroSeries,
     background_video_path: Path,
     store_path: Path = config.VOICE_SESSION_STORE_PATH,
+    hook_bg_override: str | None = None,
+    hook_accent_override: str | None = None,
+    hook_brand_override: str | None = None,
 ) -> AdviceVoiceSession:
     """Create a new AdviceVoiceSession with all slots initialised to None."""
     now = _utc_now()
@@ -994,6 +1021,9 @@ def create_voice_session(
         background_video_path=background_video_path,
         created_at=now,
         updated_at=now,
+        hook_bg_override=hook_bg_override,
+        hook_accent_override=hook_accent_override,
+        hook_brand_override=hook_brand_override,
     )
     existing = _load_voice_sessions(store_path)
     _write_voice_sessions(store_path, (*existing, session))
@@ -1160,6 +1190,9 @@ def render_voice_session(
                 part.part_number,
                 part.total_parts,
                 topic.series_id if topic is not None else None,
+                session.hook_bg_override,
+                session.hook_accent_override,
+                session.hook_brand_override,
             )
         except RenderError as exc:
             LOGGER.error(

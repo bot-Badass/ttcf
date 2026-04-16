@@ -186,6 +186,31 @@ CONTENT_PLAN_PATH: Final[Path] = DATA_DIR / "content_plan.json"
 SCRIPT_PROMPT_PATH: Final[Path] = DATA_DIR / "prompts" / "script_prompt.md"
 ADVICE_SCRIPT_MIN_WORDS: Final[int] = int(os.getenv("ADVICE_SCRIPT_MIN_WORDS", "100"))
 
+# Category pill labels per series_id — auto-applied to hook frame.
+# Key = series_id (A, B, C...), value = category label shown in pill.
+# Each channel has its own mapping.
+LAW_SERIES_CATEGORIES: Final[dict[str, str]] = {
+    "A": "МОБІЛІЗАЦІЯ",
+    "B": "ПРАВА В ЄС",
+    "C": "СІМЕЙНЕ ПРАВО",
+    "D": "КОМПЕНСАЦІЯ",
+    "E": "ПРАВА В США",
+    "F": "ТРУДОВІ ПРАВА",
+    "G": "ВПО",
+    "H": "НЕРУХОМІСТЬ",
+    "I": "КРИМІНАЛ",
+}
+FINANCE_SERIES_CATEGORIES: Final[dict[str, str]] = {
+    "A": "КРЕДИТИ",
+    "B": "ФОП",
+    "C": "ОВДП",
+    "D": "ВАЛЮТА",
+    "E": "ЗАРПЛАТА",
+    "F": "КОМУНАЛКА",
+    "G": "ШАХРАЇ",
+    "H": "ІНВЕСТИЦІЇ",
+}
+
 # Multi-channel profiles — one bot, two content channels.
 # Each profile overrides plan_path, prompt_path and hook-frame visuals.
 CHANNEL_PROFILES: Final[dict[str, dict]] = {
@@ -196,6 +221,7 @@ CHANNEL_PROFILES: Final[dict[str, dict]] = {
         "hook_bg": "0x0a0a0a",
         "hook_accent": "0xFF3B30",
         "hook_brand": "",
+        "series_categories": LAW_SERIES_CATEGORIES,
     },
     "finance": {
         "label": "💰 MoneyUA",
@@ -204,6 +230,7 @@ CHANNEL_PROFILES: Final[dict[str, dict]] = {
         "hook_bg": "0x0d1b3e",
         "hook_accent": "0xFFD700",
         "hook_brand": "MONEY UA",
+        "series_categories": FINANCE_SERIES_CATEGORIES,
     },
 }
 DEFAULT_CHANNEL: Final[str] = "law"
