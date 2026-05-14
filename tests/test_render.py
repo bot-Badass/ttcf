@@ -65,9 +65,7 @@ class RenderTests(unittest.TestCase):
         self.assertIn("-vf", captured_command)
         self.assertTrue(
             any(
-                argument.startswith("subtitles=")
-                and "subtitles.srt" in argument
-                and "force_style=" in argument
+                "ass=" in argument and ".ass" in argument
                 for argument in captured_command
             )
         )
@@ -84,9 +82,8 @@ class RenderTests(unittest.TestCase):
 
         self.assertIn("-vf", command)
         vf_argument = command[command.index("-vf") + 1]
-        self.assertIn("force_style=", vf_argument)
-        self.assertIn("Alignment=", vf_argument)
-        self.assertIn("FontSize=", vf_argument)
+        self.assertIn("ass=", vf_argument)
+        self.assertIn(".ass", vf_argument)
 
     def test_subtitle_force_style_not_included_when_no_subtitle_path(self) -> None:
         command = _build_ffmpeg_render_command(
@@ -98,7 +95,9 @@ class RenderTests(unittest.TestCase):
             ffmpeg_path=config.FFMPEG_PATH,
         )
 
-        self.assertNotIn("-vf", command)
+        self.assertIn("-vf", command)
+        vf_argument = command[command.index("-vf") + 1]
+        self.assertNotIn("ass=", vf_argument)
 
     def test_build_subtitle_force_style_uses_config_values(self) -> None:
         with (
@@ -190,6 +189,104 @@ class RenderTests(unittest.TestCase):
             escaped_path,
             "/tmp/sub\\:title\\'s\\,file.srt",
         )
+
+    def test_cta_share_overlay_for_non_last_part(self) -> None:
+        with patch("src.render.config.CTA_ENABLED", True):
+            command = _build_ffmpeg_render_command(
+                background_video_path=self.background_video_path,
+                audio_path=self.audio_path,
+                output_path=self.output_path,
+                subtitle_path=None,
+                duration_seconds=10.0,
+                ffmpeg_path=config.FFMPEG_PATH,
+                part_number=2,
+                total_parts=4,
+            )
+
+        self.assertIn("-filter_complex", command)
+        fc = command[command.index("-filter_complex") + 1]
+        # Non-last part: share CTA overlay ("Поділись"), not subscribe card.
+        self.assertIn("colorkey=0x00ff00", fc)
+        self.assertIn("share_ol", fc)
+        # t0 = 10.0 - CTA_DURATION (default 3.0) = 7.0
+        self.assertIn("gte(t,7.000)", fc)
+        self.assertIn("[outv]", fc)
+        self.assertNotIn("xfade", fc)
+
+    def test_cta_subscribe_card_when_share_path_empty(self) -> None:
+        with (
+            patch("src.render.config.CTA_ENABLED", True),
+            patch("src.render.config.CTA_SHARE_OVERLAY_PATH", ""),
+        ):
+            command = _build_ffmpeg_render_command(
+                background_video_path=self.background_video_path,
+                audio_path=self.audio_path,
+                output_path=self.output_path,
+                subtitle_path=None,
+                duration_seconds=10.0,
+                ffmpeg_path=config.FFMPEG_PATH,
+                part_number=2,
+                total_parts=4,
+            )
+
+        self.assertIn("-filter_complex", command)
+        fc = command[command.index("-filter_complex") + 1]
+        self.assertIn("xfade=transition=fade", fc)
+        # xfade offset = 10.0 - CTA_DURATION (default 3.0) = 7.0
+        self.assertIn("offset=7.000", fc)
+        self.assertIn("Ч.3/4", fc)
+        self.assertIn("[outv]", fc)
+
+    def test_cta_overlay_series_complete_for_last_part(self) -> None:
+        with patch("src.render.config.CTA_ENABLED", True):
+            command = _build_ffmpeg_render_command(
+                background_video_path=self.background_video_path,
+                audio_path=self.audio_path,
+                output_path=self.output_path,
+                subtitle_path=None,
+                duration_seconds=10.0,
+                ffmpeg_path=config.FFMPEG_PATH,
+                part_number=4,
+                total_parts=4,
+            )
+
+        fc = command[command.index("-filter_complex") + 1]
+        self.assertIn("Серію завершено", fc)
+        self.assertNotIn("Ч.5", fc)
+
+    def test_cta_overlay_not_added_when_disabled(self) -> None:
+        with patch("src.render.config.CTA_ENABLED", False):
+            command = _build_ffmpeg_render_command(
+                background_video_path=self.background_video_path,
+                audio_path=self.audio_path,
+                output_path=self.output_path,
+                subtitle_path=None,
+                duration_seconds=10.0,
+                ffmpeg_path=config.FFMPEG_PATH,
+                part_number=2,
+                total_parts=4,
+            )
+
+        self.assertIn("-vf", command)
+        vf = command[command.index("-vf") + 1]
+        self.assertNotIn("xfade", vf)
+        self.assertNotIn("brand_card", vf)
+
+    def test_cta_overlay_not_added_when_part_number_none(self) -> None:
+        with patch("src.render.config.CTA_ENABLED", True):
+            command = _build_ffmpeg_render_command(
+                background_video_path=self.background_video_path,
+                audio_path=self.audio_path,
+                output_path=self.output_path,
+                subtitle_path=None,
+                duration_seconds=10.0,
+                ffmpeg_path=config.FFMPEG_PATH,
+                part_number=None,
+                total_parts=None,
+            )
+
+        vf = command[command.index("-vf") + 1]
+        self.assertNotIn("drawbox=x=0:y=1580", vf)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% block title %}Контент-план{% endblock %}
+{% block heading %}📋 Контент-план{% endblock %}
+
+{% block content %}
+
+<!-- Filters -->
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px;align-items:center;">
+  <!-- Channel -->
+  <div style="display:flex;gap:6px;">
+    {% for val, label in [('all','Всі канали'),('law','DontPanicLaw'),('finance','MoneyUA')] %}
+    <a href="/plan?channel={{ val }}&status={{ filter_status }}&series={{ filter_series }}"
+       style="padding:7px 14px;border-radius:8px;font-size:13px;font-weight:500;text-decoration:none;transition:all .15s;
+       {% if filter_channel == val %}background:rgba(99,102,241,.2);border:1px solid rgba(99,102,241,.4);color:#818cf8;
+       {% else %}background:var(--bg-card);border:1px solid var(--border);color:var(--text-secondary);{% endif %}">
+      {{ label }}
+    </a>
+    {% endfor %}
+  </div>
+
+  <div style="width:1px;height:24px;background:var(--border);"></div>
+
+  <!-- Status -->
+  <div style="display:flex;gap:6px;">
+    {% for val, label in [('all','Всі'),('pending','Очікує'),('rendered','Готово')] %}
+    <a href="/plan?channel={{ filter_channel }}&status={{ val }}&series={{ filter_series }}"
+       style="padding:7px 14px;border-radius:8px;font-size:13px;font-weight:500;text-decoration:none;transition:all .15s;
+       {% if filter_status == val %}background:rgba(99,102,241,.2);border:1px solid rgba(99,102,241,.4);color:#818cf8;
+       {% else %}background:var(--bg-card);border:1px solid var(--border);color:var(--text-secondary);{% endif %}">
+      {{ label }}
+    </a>
+    {% endfor %}
+  </div>
+
+  <!-- Series -->
+  {% if series_ids %}
+  <div style="display:flex;gap:6px;flex-wrap:wrap;">
+    <a href="/plan?channel={{ filter_channel }}&status={{ filter_status }}&series=all"
+       style="padding:7px 12px;border-radius:8px;font-size:12px;font-weight:600;text-decoration:none;transition:all .15s;
+       {% if filter_series == 'all' %}background:rgba(99,102,241,.2);border:1px solid rgba(99,102,241,.4);color:#818cf8;
+       {% else %}background:var(--bg-card);border:1px solid var(--border);color:var(--text-secondary);{% endif %}">
+      Серії: всі
+    </a>
+    {% for sid in series_ids %}
+    <a href="/plan?channel={{ filter_channel }}&status={{ filter_status }}&series={{ sid }}"
+       style="padding:7px 12px;border-radius:8px;font-size:12px;font-weight:700;text-decoration:none;transition:all .15s;
+       {% if filter_series == sid %}background:rgba(99,102,241,.2);border:1px solid rgba(99,102,241,.4);color:#818cf8;
+       {% else %}background:var(--bg-card);border:1px solid var(--border);color:var(--text-secondary);{% endif %}">
+      {{ sid }}
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div style="margin-left:auto;font-size:13px;color:var(--text-secondary);">{{ total }} тем</div>
+</div>
+
+<!-- Table -->
+{% if topics %}
+<div class="card-base overflow-hidden">
+  <table style="width:100%;border-collapse:collapse;">
+    <thead>
+      <tr style="border-bottom:1px solid var(--border);">
+        <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);">ID</th>
+        <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);">Канал · Серія</th>
+        <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);">Тема</th>
+        <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);">Статус</th>
+        <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);">Дія</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for et in topics %}
+      <tr class="table-row">
+        <td style="padding:12px 16px;font-size:13px;font-weight:700;color:var(--text-secondary);white-space:nowrap;">{{ et.topic.topic_id }}</td>
+        <td style="padding:12px 16px;white-space:nowrap;">
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <span class="badge-{{ et.channel_key }}" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px;display:inline-block;width:fit-content;">{{ et.channel_label }}</span>
+            <span style="font-size:11px;color:var(--text-secondary);">{{ et.topic.series_title[:25] }}{% if et.topic.series_title|length > 25 %}…{% endif %}</span>
+          </div>
+        </td>
+        <td style="padding:12px 16px;max-width:320px;">
+          <div style="font-size:13px;font-weight:500;color:var(--text-primary);line-height:1.4;">{{ et.topic.title[:65] }}{% if et.topic.title|length > 65 %}…{% endif %}</div>
+          {% if et.topic.hook_formula %}
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">{{ et.topic.hook_formula[:55] }}{% if et.topic.hook_formula|length > 55 %}…{% endif %}</div>
+          {% endif %}
+        </td>
+        <td style="padding:12px 16px;white-space:nowrap;">
+          {% if et.has_active_session %}
+          <span class="badge-status-in_progress" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:99px;">🎙 Записується</span>
+          {% elif et.has_render %}
+          <span class="badge-status-rendered" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:99px;">🎬 Зрендеровано</span>
+          {% elif et.topic.status == 'rendered' %}
+          <span class="badge-status-rendered" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:99px;">✅ Готово</span>
+          {% elif et.topic.status == 'script_received' %}
+          <span class="badge-status-queued" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:99px;">📝 Скрипт</span>
+          {% else %}
+          <span class="badge-status-pending" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:99px;">⏳ Очікує</span>
+          {% endif %}
+        </td>
+        <td style="padding:12px 16px;white-space:nowrap;">
+          <div style="display:flex;gap:6px;">
+            <button onclick="openTopicModal({{ loop.index0 }})" class="btn-ghost" style="font-size:12px;">Деталі</button>
+            {% if et.topic.status == 'pending' and not et.has_active_session %}
+            <button onclick="openCreateSessionModal({{ loop.index0 }})" class="btn-primary" style="font-size:12px;padding:6px 12px;">▶ Почати</button>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% else %}
+<div class="card-base">
+  <div class="empty-state">
+    <div class="icon">📋</div>
+    <div style="font-size:15px;font-weight:500;margin-bottom:6px;">Тем не знайдено</div>
+    <div style="font-size:13px;color:var(--text-secondary);">Спробуйте змінити фільтри</div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Topic modals data -->
+<script>
+const TOPICS = [
+  {% for et in topics %}
+  {
+    id: {{ et.topic.topic_id | tojson }},
+    title: {{ et.topic.title | tojson }},
+    series_title: {{ et.topic.series_title | tojson }},
+    hook_formula: {{ et.topic.hook_formula | tojson }},
+    audience: {{ et.topic.audience | tojson }},
+    scenario: {{ et.topic.scenario | tojson }},
+    status: {{ et.topic.status | tojson }},
+    channel: {{ et.channel_label | tojson }},
+    channel_key: {{ et.channel_key | tojson }},
+  },
+  {% endfor %}
+];
+
+function openCreateSessionModal(idx) {
+  const t = TOPICS[idx];
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-box" style="padding:28px;max-width:600px;width:95%;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+        <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:rgba(99,102,241,.2);color:#818cf8;">${t.id}</span>
+        <span style="font-size:13px;font-weight:600;color:var(--text-primary);">${t.title}</span>
+      </div>
+      ${t.hook_formula ? `<div style="background:var(--bg-base);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:12px;color:var(--text-secondary);margin-bottom:16px;">🎯 ${t.hook_formula}</div>` : ''}
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--text-secondary);margin-bottom:8px;">Скрипт (формат PARTS: N)</div>
+      <textarea id="script-input-${t.id}" placeholder="PARTS: 4&#10;&#10;Частина 1&#10;Текст першої частини...&#10;&#10;Частина 2&#10;Текст другої частини..."
+        style="width:100%;height:240px;background:var(--bg-base);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;color:var(--text-primary);font-family:monospace;resize:vertical;outline:none;box-sizing:border-box;"></textarea>
+      <div style="display:flex;gap:8px;margin-top:14px;">
+        <button id="create-btn-${t.id}" class="btn-primary" style="flex:1;" onclick="submitCreateSession('${t.id}', '${t.channel_key}', this)">
+          ▶ Створити сесію + завантажити фон
+        </button>
+        <button onclick="this.closest('.modal-overlay').remove()" class="btn-ghost">Скасувати</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-top:10px;">⏳ Після натискання система завантажить фонове відео з Pexels (~10–30 сек)</div>
+    </div>`;
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+function submitCreateSession(topicId, channelKey, btn) {
+  const scriptText = document.getElementById('script-input-' + topicId).value.trim();
+  if (!scriptText) { showToast('Введіть скрипт', 'error'); return; }
+  btn.disabled = true;
+  btn.textContent = '⏳ Завантажуємо фон із Pexels…';
+  fetch('/api/plan/' + topicId + '/create-session', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({channel_key: channelKey, script_text: scriptText}),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        showBgPreviewStep(data.session_id, data.bg_video_url);
+      } else {
+        btn.disabled = false;
+        btn.textContent = '▶ Створити сесію + завантажити фон';
+        showToast(data.message, 'error');
+      }
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.textContent = '▶ Створити сесію + завантажити фон';
+      showToast('Помилка запиту', 'error');
+    });
+}
+
+function showBgPreviewStep(sessionId, videoUrl) {
+  // Replace modal content with background preview
+  const overlay = document.querySelector('.modal-overlay');
+  if (!overlay) return;
+  const box = overlay.querySelector('.modal-box');
+  box.innerHTML = `
+    <div style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:16px;">🎥 Перегляд фону</div>
+    <video id="bg-preview-video" src="${videoUrl}" autoplay muted loop
+      style="width:100%;border-radius:10px;background:#000;max-height:280px;object-fit:cover;"></video>
+    <div style="font-size:12px;color:var(--text-secondary);margin-top:8px;margin-bottom:16px;">
+      Перегляньте фонове відео. Якщо не підходить — завантажте інший варіант.
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn-primary" style="flex:1;" onclick="acceptBackground()">✅ Підходить — до запису!</button>
+      <button class="btn-ghost" id="refresh-bg-btn" onclick="refreshBackground('${sessionId}', this)">🔄 Інший варіант</button>
+    </div>
+    <div id="refresh-status" style="font-size:11px;color:var(--text-secondary);margin-top:8px;min-height:16px;"></div>
+  `;
+  // Store sessionId for later use
+  box.dataset.sessionId = sessionId;
+}
+
+function refreshBackground(sessionId, btn) {
+  btn.disabled = true;
+  btn.textContent = '⏳ Завантажую…';
+  const status = document.getElementById('refresh-status');
+  if (status) status.textContent = 'Шукаємо новий варіант на Pexels…';
+  fetch('/api/sessions/' + sessionId + '/refresh-background', {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.textContent = '🔄 Інший варіант';
+      if (data.ok) {
+        const vid = document.getElementById('bg-preview-video');
+        if (vid) { vid.src = data.video_url + '?t=' + Date.now(); vid.load(); vid.play(); }
+        if (status) status.textContent = '✓ Новий фон завантажено';
+      } else {
+        if (status) status.textContent = '❌ ' + data.message;
+      }
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.textContent = '🔄 Інший варіант';
+      if (status) status.textContent = '❌ Помилка';
+    });
+}
+
+function acceptBackground() {
+  document.querySelector('.modal-overlay')?.remove();
+  showToast('✅ Сесію створено — можна записувати голос!', 'success');
+  setTimeout(() => { window.location.href = '/sessions'; }, 700);
+}
+
+function openTopicModal(idx) {
+  const t = TOPICS[idx];
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-box" style="padding:28px;max-width:520px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+        <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:rgba(99,102,241,.2);color:#818cf8;">${t.id}</span>
+        <span style="font-size:11px;color:var(--text-secondary);">${t.channel} · ${t.series_title}</span>
+        <button onclick="navigator.clipboard.writeText('${t.id}').then(()=>showToast('ID скопійовано'))"
+          style="margin-left:auto;background:none;border:1px solid var(--border);color:var(--text-secondary);padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;">
+          📋 Копіювати ID
+        </button>
+      </div>
+      <h3 style="font-size:17px;font-weight:700;color:var(--text-primary);margin-bottom:16px;line-height:1.4;">${t.title}</h3>
+      ${t.hook_formula ? `<div style="margin-bottom:14px;"><div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--text-secondary);margin-bottom:6px;">Hook Formula</div><div style="font-size:13px;color:var(--text-primary);background:var(--bg-base);padding:10px 14px;border-radius:8px;border:1px solid var(--border);">${t.hook_formula}</div></div>` : ''}
+      ${t.audience ? `<div style="margin-bottom:14px;"><div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--text-secondary);margin-bottom:6px;">Аудиторія</div><div style="font-size:13px;color:var(--text-primary);">${t.audience}</div></div>` : ''}
+      ${t.scenario ? `<div style="margin-bottom:20px;"><div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--text-secondary);margin-bottom:6px;">Сценарій</div><div style="font-size:13px;color:var(--text-primary);line-height:1.6;">${t.scenario}</div></div>` : ''}
+      <button onclick="this.closest('.modal-overlay').remove()" class="btn-ghost" style="width:100%;">Закрити</button>
+    </div>`;
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+</script>
+
+{% endblock %}

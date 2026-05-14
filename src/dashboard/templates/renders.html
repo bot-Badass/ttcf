@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Рендери{% endblock %}
+{% block heading %}🎬 Архів рендерів{% endblock %}
+
+{% block content %}
+
+<!-- Search bar -->
+<form method="get" action="/renders" style="display:flex;gap:10px;margin-bottom:20px;">
+  <input
+    type="text"
+    name="q"
+    value="{{ search_q }}"
+    placeholder="Пошук по topic_id або asset_id…"
+    style="flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:13px;color:var(--text-primary);outline:none;"
+    onkeydown="if(event.key==='Escape'){this.value='';this.form.submit();}"
+  />
+  <button type="submit" class="btn-primary" style="padding:8px 18px;">Шукати</button>
+  {% if search_q %}<a href="/renders" class="btn-ghost" style="padding:8px 14px;text-decoration:none;">✕</a>{% endif %}
+</form>
+
+{% if renders %}
+<div style="margin-bottom:16px;font-size:13px;color:var(--text-secondary);">{{ renders|length }} відео</div>
+<div class="card-base overflow-hidden">
+  <table style="width:100%;border-collapse:collapse;">
+    <thead>
+      <tr style="border-bottom:1px solid var(--border);">
+        <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);width:60px;">Preview</th>
+        <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);">Назва</th>
+        <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);">Канал</th>
+        <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);">Розмір</th>
+        <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);">Дія</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in renders %}
+      {% set is_queued = r.asset_id in queued_ids %}
+      <tr class="table-row" id="render-row-{{ r.asset_id }}">
+        <td style="padding:10px 16px;">
+          <div style="width:38px;height:54px;border-radius:6px;overflow:hidden;background:var(--bg-base);cursor:pointer;flex-shrink:0;"
+               onclick="openVideoModal('{{ r.video_path | string | replace('/', '', 1) }}')">
+            {% if r.thumb_path %}
+            <img src="/media/thumb/{{ r.thumb_path | string | replace('/', '', 1) }}" style="width:100%;height:100%;object-fit:cover;" loading="lazy"/>
+            {% else %}
+            <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--text-secondary);">▶</div>
+            {% endif %}
+          </div>
+        </td>
+        <td style="padding:10px 16px;">
+          <div style="font-size:13px;font-weight:500;color:var(--text-primary);">
+            {{ r.topic_id }}{% if r.part_number %} · ч.{{ r.part_number }}{% endif %}
+          </div>
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">{{ r.asset_id[:20] }}…</div>
+        </td>
+        <td style="padding:10px 16px;">
+          <span class="badge-{{ r.channel_key }}" style="font-size:11px;font-weight:600;padding:3px 8px;border-radius:99px;">
+            {{ 'MoneyUA' if r.channel_key == 'finance' else 'Law' }}
+          </span>
+        </td>
+        <td style="padding:10px 16px;font-size:13px;color:var(--text-secondary);">{{ r.size_mb }} MB</td>
+        <td style="padding:10px 16px;">
+          <div style="display:flex;gap:6px;align-items:center;">
+            <button onclick="openVideoModal('{{ r.video_path | string | replace('/', '', 1) }}')" class="btn-ghost" style="font-size:12px;padding:5px 10px;">▶</button>
+            <a href="/media/video/{{ r.video_path | string | replace('/', '', 1) }}" download class="btn-ghost" style="font-size:12px;padding:5px 10px;text-decoration:none;">⬇</a>
+            {% if is_queued %}
+            <span style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:7px;background:rgba(99,102,241,.2);border:1px solid rgba(99,102,241,.35);color:#818cf8;">✓ В черзі</span>
+            {% else %}
+            <button class="btn-primary" style="font-size:12px;padding:5px 12px;"
+              onclick="enqueueRender('{{ r.asset_id }}', this)">
+              + Черга
+            </button>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% else %}
+<div class="card-base">
+  <div class="empty-state">
+    <div class="icon">🎞</div>
+    <div style="font-size:15px;font-weight:500;margin-bottom:6px;">{% if search_q %}Нічого не знайдено{% else %}Рендерів ще немає{% endif %}</div>
+    <div style="font-size:13px;color:var(--text-secondary);">{% if search_q %}Спробуйте інший запит{% else %}Відео з'являться тут після рендеру{% endif %}</div>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function enqueueRender(assetId, btn) {
+  btn.disabled = true;
+  btn.textContent = '…';
+  fetch('/api/renders/' + assetId + '/enqueue', {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        btn.outerHTML = '<span style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:7px;background:rgba(99,102,241,.2);border:1px solid rgba(99,102,241,.35);color:#818cf8;">✓ В черзі</span>';
+        showToast(data.message, 'success');
+      } else {
+        btn.disabled = false;
+        btn.textContent = '+ Черга';
+        showToast(data.message, 'error');
+      }
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.textContent = '+ Черга';
+      showToast('Помилка запиту', 'error');
+    });
+}
+</script>
+{% endblock %}

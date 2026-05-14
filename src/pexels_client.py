@@ -12,6 +12,22 @@ from typing import Any, Callable, Mapping
 
 from src import config
 
+_BLACKLIST_PATH = config.DATA_DIR / "used_backgrounds.json"
+
+
+def _load_blacklist() -> dict[str, list[int]]:
+    if _BLACKLIST_PATH.is_file():
+        try:
+            return json.loads(_BLACKLIST_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _save_blacklist(blacklist: dict[str, list[int]]) -> None:
+    _BLACKLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _BLACKLIST_PATH.write_text(json.dumps(blacklist, ensure_ascii=False, indent=2), encoding="utf-8")
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -30,7 +46,8 @@ def download_background_video(
     api_key: str | None = None,
     http_get: HttpGetBoundary | None = None,
     http_download: HttpDownloadBoundary | None = None,
-) -> Path:
+    extra_exclude_ids: set[int] | None = None,
+) -> int | None:
     # Local fallback: if ADVICE_LOCAL_BACKGROUND_VIDEO is set, skip Pexels entirely.
     local_bg = config.ADVICE_LOCAL_BACKGROUND_VIDEO
     if local_bg:
@@ -43,7 +60,7 @@ def download_background_video(
         import shutil
         shutil.copy2(local_path, output_path)
         LOGGER.info("Background video copied from local fallback: %s", local_path)
-        return output_path
+        return None
 
     resolved_key = api_key or config.PEXELS_API_KEY
     if not resolved_key:
@@ -74,7 +91,12 @@ def download_background_video(
     if not isinstance(videos, list):
         raise PexelsError("Pexels response missing 'videos' list.")
 
-    video_link = _pick_hd_portrait_link(videos, min_duration)
+    blacklist = _load_blacklist()
+    used_ids: set[int] = set(blacklist.get(query, []))
+    if extra_exclude_ids:
+        used_ids |= extra_exclude_ids
+
+    video_link, video_id = _pick_hd_portrait_link(videos, min_duration, used_ids)
     if video_link is None:
         raise PexelsError(
             f"No suitable portrait HD video found on Pexels "
@@ -101,13 +123,30 @@ def download_background_video(
     finally:
         tmp_path.unlink(missing_ok=True)
 
-    LOGGER.info(
-        "Pexels video downloaded and transcoded: query=%s size=%dMB output=%s",
-        query,
-        output_path.stat().st_size // (1024 * 1024),
-        output_path,
-    )
-    return output_path
+    # Record used video_id in blacklist.
+    if video_id is not None:
+        if video_id in used_ids:
+            # Fallback to full pool occurred — all videos were used; reset and start fresh.
+            blacklist[query] = [video_id]
+        else:
+            entry = blacklist.get(query, [])
+            entry.append(video_id)
+            blacklist[query] = entry
+        _save_blacklist(blacklist)
+        LOGGER.info(
+            "Pexels video downloaded and transcoded: query=%s video_id=%d size=%dMB output=%s",
+            query, video_id,
+            output_path.stat().st_size // (1024 * 1024),
+            output_path,
+        )
+    else:
+        LOGGER.info(
+            "Pexels video downloaded and transcoded: query=%s size=%dMB output=%s",
+            query,
+            output_path.stat().st_size // (1024 * 1024),
+            output_path,
+        )
+    return video_id
 
 
 def _transcode_background_video(input_path: Path, output_path: Path) -> None:
@@ -150,39 +189,53 @@ def _transcode_background_video(input_path: Path, output_path: Path) -> None:
         raise PexelsError(f"Transcoded background video is empty: {output_path}")
 
 
-def _pick_hd_portrait_link(videos: list[Any], min_duration: int) -> str | None:
-    """Pick a random suitable HD portrait video link from results.
+def _pick_hd_portrait_link(
+    videos: list[Any],
+    min_duration: int,
+    exclude_ids: set[int] | None = None,
+) -> tuple[str, int] | tuple[None, None]:
+    """Pick a random HD portrait video link, skipping already-used IDs.
 
-    Collects all eligible links first, then picks one at random to ensure
-    variety across consecutive calls with the same query.
+    Returns (link, video_id) or (None, None) if nothing eligible.
+    If all results are blacklisted, falls back to the full pool.
     """
-    eligible_links: list[str] = []
-    for video in videos:
-        if not isinstance(video, dict):
-            continue
-        duration = video.get("duration", 0)
-        if not isinstance(duration, (int, float)) or duration < min_duration:
-            continue
-        video_files = video.get("video_files", [])
-        if not isinstance(video_files, list):
-            continue
-        for vf in video_files:
-            if not isinstance(vf, dict):
-                continue
-            if vf.get("quality") != "hd":
-                continue
-            link = vf.get("link")
-            if not link:
-                continue
-            width = vf.get("width") or 0
-            height = vf.get("height") or 0
-            if height >= width:
-                eligible_links.append(str(link))
-                break  # one link per video is enough
+    exclude = exclude_ids or set()
 
-    if not eligible_links:
-        return None
-    return random.choice(eligible_links)
+    def _collect(vids: list[Any], skip_ids: set[int]) -> list[tuple[str, int]]:
+        eligible: list[tuple[str, int]] = []
+        for video in vids:
+            if not isinstance(video, dict):
+                continue
+            video_id = video.get("id")
+            if not isinstance(video_id, int):
+                continue
+            if video_id in skip_ids:
+                continue
+            duration = video.get("duration", 0)
+            if not isinstance(duration, (int, float)) or duration < min_duration:
+                continue
+            for vf in video.get("video_files", []):
+                if not isinstance(vf, dict):
+                    continue
+                if vf.get("quality") != "hd":
+                    continue
+                link = vf.get("link")
+                if not link:
+                    continue
+                w = vf.get("width") or 0
+                h = vf.get("height") or 0
+                if h >= w:
+                    eligible.append((str(link), video_id))
+                    break
+        return eligible
+
+    candidates = _collect(videos, exclude)
+    if not candidates:
+        # All results are blacklisted — fall back to full pool and reset later.
+        candidates = _collect(videos, set())
+    if not candidates:
+        return None, None
+    return random.choice(candidates)
 
 
 _DEFAULT_HEADERS: Mapping[str, str] = {

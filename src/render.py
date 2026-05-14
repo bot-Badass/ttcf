@@ -31,6 +31,11 @@ def render_story_video(
     hook_bg_override: str | None = None,
     hook_accent_override: str | None = None,
     hook_brand_override: str | None = None,
+    category_override: str = "",
+    cta_overlay_path: str | None = None,
+    cta_overlay_width: int = 380,
+    cta_overlay_y: int = 100,
+    cta_start_offset: float | None = None,
     *,
     ffmpeg_path: str = config.FFMPEG_PATH,
     run_command: CommandRunnerBoundary | None = None,
@@ -69,6 +74,7 @@ def render_story_video(
                 hook_bg_override=hook_bg_override,
                 hook_accent_override=hook_accent_override,
                 hook_brand_override=hook_brand_override,
+                category_override=category_override,
             )
             _render_body(
                 background_video_path=background_video_path,
@@ -80,8 +86,15 @@ def render_story_video(
                 run_command=runner,
                 part_number=part_number,
                 total_parts=total_parts,
+                hook_accent_override=hook_accent_override,
+                hook_brand_override=hook_brand_override,
+                hook_bg_override=hook_bg_override,
+                cta_overlay_path=cta_overlay_path,
+                cta_overlay_width=cta_overlay_width,
+                cta_overlay_y=cta_overlay_y,
+                cta_start_offset=cta_start_offset,
             )
-            _concat_hook_and_body(
+            _overlay_hook_on_body(
                 hook_path=hook_path,
                 body_path=body_path,
                 output_path=output_path,
@@ -107,6 +120,13 @@ def render_story_video(
             ffmpeg_path=ffmpeg_path,
             part_number=part_number,
             total_parts=total_parts,
+            hook_accent_override=hook_accent_override,
+            hook_brand_override=hook_brand_override,
+            hook_bg_override=hook_bg_override,
+            cta_overlay_path=cta_overlay_path,
+            cta_overlay_width=cta_overlay_width,
+            cta_overlay_y=cta_overlay_y,
+            cta_start_offset=cta_start_offset,
         )
         try:
             runner(command, config.FFMPEG_TIMEOUT_SECONDS)
@@ -119,6 +139,169 @@ def render_story_video(
 
     LOGGER.info("Render succeeded: output=%s", output_path)
     return output_path
+
+
+def render_myth_story_video(
+    background_video_path: Path,
+    audio_path: Path,
+    output_path: Path,
+    subtitle_path: Path | None = None,
+    hook_text: str | None = None,
+    platform: str = "tiktok",
+    hook_bg_override: str | None = None,
+    hook_accent_override: str | None = None,
+    hook_brand_override: str | None = None,
+    category_override: str = "",
+    ffmpeg_path: str = config.FFMPEG_PATH,
+) -> Path:
+    """Myth-bust render: body + hook + greenscreen CTA overlays for one platform."""
+    _validate_render_inputs(
+        background_video_path=background_video_path,
+        audio_path=audio_path,
+        subtitle_path=subtitle_path,
+    )
+    LOGGER.info(
+        "render_myth_story_video: platform=%s background=%s audio=%s output=%s",
+        platform, background_video_path, audio_path, output_path,
+    )
+    duration_seconds = _probe_media_duration(audio_path)
+
+    if platform == "youtube":
+        share_cta_path: str | None = config.CTA_SHARE_PATH
+        subscribe_cta_path = config.CTA_SUBSCRIBE_YOUTUBE_PATH
+        subscribe_cta_y_offset = config.CTA_SUBSCRIBE_YOUTUBE_Y_OFFSET
+    elif platform == "instagram":
+        share_cta_path = config.CTA_SHARE_PATH
+        subscribe_cta_path = config.CTA_SUBSCRIBE_INSTAGRAM_PATH
+        subscribe_cta_y_offset = config.CTA_SUBSCRIBE_INSTAGRAM_Y_OFFSET
+    else:
+        share_cta_path = config.CTA_SHARE_PATH
+        subscribe_cta_path = config.CTA_SUBSCRIBE_TIKTOK_PATH
+        subscribe_cta_y_offset = config.CTA_SUBSCRIBE_Y_OFFSET
+
+    if not (config.HOOK_FRAME_ENABLED and hook_text):
+        return render_story_video(
+            background_video_path=background_video_path,
+            audio_path=audio_path,
+            output_path=output_path,
+            subtitle_path=subtitle_path,
+            hook_text=hook_text,
+            ffmpeg_path=ffmpeg_path,
+        )
+
+    hook_path = output_path.parent / f"hook_{platform}.mp4"
+    body_path = output_path.parent / f"body_{platform}.mp4"
+    try:
+        _render_hook_frame(
+            hook_text=hook_text,
+            output_path=hook_path,
+            ffmpeg_path=ffmpeg_path,
+            run_command=_run_command,
+            background_video_path=background_video_path,
+            hook_bg_override=hook_bg_override,
+            hook_accent_override=hook_accent_override,
+            hook_brand_override=hook_brand_override,
+            category_override=category_override,
+        )
+        _render_body(
+            background_video_path=background_video_path,
+            audio_path=audio_path,
+            output_path=body_path,
+            subtitle_path=subtitle_path,
+            duration_seconds=duration_seconds,
+            ffmpeg_path=ffmpeg_path,
+            run_command=_run_command,
+        )
+        cmd = _build_myth_ffmpeg_command(
+            body_path=body_path,
+            hook_path=hook_path,
+            output_path=output_path,
+            duration_seconds=duration_seconds,
+            ffmpeg_path=ffmpeg_path,
+            share_cta_path=share_cta_path,
+            share_cta_y_expr=config.CTA_SHARE_Y_EXPR,
+            share_cta_x_expr=config.CTA_SHARE_X_EXPR,
+            share_cta_start=config.CTA_SHARE_START,
+            subscribe_cta_path=subscribe_cta_path,
+            subscribe_cta_y_offset=subscribe_cta_y_offset,
+            subscribe_cta_max_duration=config.CTA_SUBSCRIBE_MAX_DURATION,
+        )
+        LOGGER.info("myth ffmpeg command: %s", " ".join(cmd))
+        _run_command(cmd, config.FFMPEG_TIMEOUT_SECONDS)
+    except RenderError as exc:
+        LOGGER.error(
+            "render_myth_story_video failed: platform=%s output=%s reason=%s",
+            platform, output_path, exc,
+        )
+        raise
+    finally:
+        hook_path.unlink(missing_ok=True)
+        body_path.unlink(missing_ok=True)
+
+    LOGGER.info("render_myth_story_video succeeded: platform=%s output=%s", platform, output_path)
+    return output_path
+
+
+def _build_myth_ffmpeg_command(
+    *,
+    body_path: Path,
+    hook_path: Path,
+    output_path: Path,
+    duration_seconds: float,
+    ffmpeg_path: str,
+    share_cta_path: str | None,
+    share_cta_y_expr: str,
+    share_cta_x_expr: str,
+    share_cta_start: float,
+    subscribe_cta_path: str,
+    subscribe_cta_y_offset: int,
+    subscribe_cta_max_duration: float,
+) -> list[str]:
+    """Build ffmpeg command for myth-bust: body + hook overlay + greenscreen CTAs."""
+    hook_dur = config.HOOK_FRAME_DURATION
+    subscribe_start = max(0.0, duration_seconds - subscribe_cta_max_duration)
+
+    command = [ffmpeg_path, "-y"]
+    command += ["-i", str(body_path)]
+    command += ["-i", str(hook_path)]
+
+    if share_cta_path is not None:
+        command += ["-i", share_cta_path]
+        subscribe_idx = 3
+    else:
+        subscribe_idx = 2
+
+    command += ["-i", subscribe_cta_path]
+
+    if share_cta_path is not None:
+        share_end = share_cta_start + 5.0
+        filter_complex = ";".join([
+            f"[0:v][1:v]overlay=0:0:enable='between(t,0,{hook_dur})'[body_hooked]",
+            f"[2:v]setpts=PTS+{share_cta_start}/TB,scale=1080:-1,colorkey=0x00ff00:0.35:0.1[share_ol]",
+            f"[{subscribe_idx}:v]trim=duration={subscribe_cta_max_duration},setpts=PTS-STARTPTS+{subscribe_start:.3f}/TB,scale=1080:-1,colorkey=0x00ff00:0.35:0.1[sub_ol]",
+            f"[body_hooked][share_ol]overlay={share_cta_x_expr}:{share_cta_y_expr}:enable='between(t,{share_cta_start},{share_end})'[body1]",
+            f"[body1][sub_ol]overlay=0:{subscribe_cta_y_offset}:enable='gte(t,{subscribe_start:.3f})'[outv]",
+        ])
+    else:
+        filter_complex = ";".join([
+            f"[0:v][1:v]overlay=0:0:enable='between(t,0,{hook_dur})'[body_hooked]",
+            f"[{subscribe_idx}:v]trim=duration={subscribe_cta_max_duration},setpts=PTS-STARTPTS+{subscribe_start:.3f}/TB,scale=1080:-1,colorkey=0x00ff00:0.35:0.1[sub_ol]",
+            f"[body_hooked][sub_ol]overlay=0:{subscribe_cta_y_offset}:enable='gte(t,{subscribe_start:.3f})'[outv]",
+        ])
+
+    command.extend([
+        "-filter_complex", filter_complex,
+        "-map", "[outv]",
+        "-map", "0:a",
+        "-c:v", config.OUTPUT_VIDEO_CODEC,
+        "-preset", config.OUTPUT_PRESET,
+        "-crf", str(config.OUTPUT_CRF),
+        "-pix_fmt", config.OUTPUT_PIXEL_FORMAT,
+        "-c:a", config.OUTPUT_AUDIO_CODEC,
+        "-movflags", config.OUTPUT_MOVFLAGS,
+        str(output_path),
+    ])
+    return command
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +349,7 @@ def _render_hook_frame(
     hook_bg_override: str | None = None,
     hook_accent_override: str | None = None,
     hook_brand_override: str | None = None,
+    category_override: str = "",
 ) -> None:
     """Route to V2 or classic hook frame based on HOOK_FRAME_LAYOUT config."""
     if config.HOOK_FRAME_LAYOUT.strip().lower() == "v2":
@@ -180,6 +364,7 @@ def _render_hook_frame(
             hook_bg_override=hook_bg_override,
             hook_accent_override=hook_accent_override,
             hook_brand_override=hook_brand_override,
+            category_override=category_override,
         )
     else:
         _render_hook_frame_classic(
@@ -201,6 +386,7 @@ def _render_hook_frame_v2(
     hook_bg_override: str | None = None,
     hook_accent_override: str | None = None,
     hook_brand_override: str | None = None,
+    category_override: str = "",
 ) -> None:
     """V2 hook frame: moving video background (darkened) + overlay text/bars.
 
@@ -220,7 +406,8 @@ def _render_hook_frame_v2(
     duration  = config.HOOK_FRAME_DURATION
     font_file = config.HOOK_FRAME_FONT_FILE
     font_opt  = f":fontfile='{font_file}'" if font_file else ""
-    category  = config.HOOK_FRAME_CATEGORY.strip().upper()
+    category  = (category_override.strip().upper()
+                 or config.HOOK_FRAME_CATEGORY.strip().upper())
     cat_fg    = config.HOOK_FRAME_CATEGORY_FG.strip()
 
     # --- Level 1: series colour theme ---
@@ -265,7 +452,7 @@ def _render_hook_frame_v2(
 
         # Fixed grid
         X_LEFT      = 90
-        FONTSIZE    = 96
+        FONTSIZE    = config.HOOK_FRAME_V2_FONT_SIZE
         FONTSIZE_SM = 34
         FONTSIZE_BR = 28
         Y_BRAND     = 1820
@@ -392,27 +579,16 @@ def _render_hook_frame_v2(
         if use_video_bg:
             # --- VIDEO background path ---
             # 1. Trim + scale/pad background video to 1080x1920.
-            # 2. Darken with eq (brightness -0.45, contrast 0.75).
-            # 3. Add semi-transparent colour tint matching series theme.
-            # 4. Apply overlay decorations.
+            # 2. Soften with eq + neutral black scrim.
+            # 3. Apply overlay decorations.
             bg_esc = _escape_ffmpeg_filter_path(background_video_path)
-            # Parse series bg hex to an RGB drawbox overlay for colour tint
-            # bg is like "0x111827" — extract R G B for colorchannelmixer
-            bg_hex = bg.lstrip("0x").lstrip("#").zfill(6)
-            r = int(bg_hex[0:2], 16) / 255
-            g = int(bg_hex[2:4], 16) / 255
-            b = int(bg_hex[4:6], 16) / 255
 
             vf = (
                 f"scale=1080:1920:force_original_aspect_ratio=decrease,"
                 f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
-                # darken the video significantly so text is readable
-                f"eq=brightness=-0.42:contrast=0.72:saturation=0.5,"
-                # colour tint: blend series bg colour at ~50% opacity via
-                # a solid colour overlay drawn at 0.5 alpha
+                f"eq=brightness=-0.12:contrast=0.95:saturation=0.85,"
                 f"drawbox=x=0:y=0:w=1080:h=1920"
-                f":color={bg}@0.55:t=fill,"
-                # decorations on top
+                f":color=black@{config.HOOK_FRAME_SCRIM_OPACITY}:t=fill,"
                 + overlay_chain
             )
             command = [
@@ -539,6 +715,13 @@ def _render_body(
     run_command: CommandRunnerBoundary,
     part_number: int | None = None,
     total_parts: int | None = None,
+    hook_accent_override: str | None = None,
+    hook_brand_override: str | None = None,
+    hook_bg_override: str | None = None,
+    cta_overlay_path: str | None = None,
+    cta_overlay_width: int = 380,
+    cta_overlay_y: int = 100,
+    cta_start_offset: float | None = None,
 ) -> None:
     """Render main video body (background + audio + subtitles) without hook."""
     command = _build_ffmpeg_render_command(
@@ -550,7 +733,46 @@ def _render_body(
         ffmpeg_path=ffmpeg_path,
         part_number=part_number,
         total_parts=total_parts,
+        hook_accent_override=hook_accent_override,
+        hook_brand_override=hook_brand_override,
+        hook_bg_override=hook_bg_override,
+        cta_overlay_path=cta_overlay_path,
+        cta_overlay_width=cta_overlay_width,
+        cta_overlay_y=cta_overlay_y,
+        cta_start_offset=cta_start_offset,
     )
+    run_command(command, config.FFMPEG_TIMEOUT_SECONDS)
+
+
+def _overlay_hook_on_body(
+    hook_path: Path,
+    body_path: Path,
+    output_path: Path,
+    ffmpeg_path: str,
+    run_command: CommandRunnerBoundary,
+) -> None:
+    """Overlay hook frame visually on top of body for HOOK_FRAME_DURATION seconds.
+
+    Audio starts from second 0 (from body — no silence at the start).
+    Hook visuals appear for HOOK_FRAME_DURATION seconds then disappear.
+    """
+    hook_dur = config.HOOK_FRAME_DURATION
+    command = [
+        ffmpeg_path, "-y",
+        "-i", str(body_path),   # 0: body with audio
+        "-i", str(hook_path),   # 1: hook visuals only
+        "-filter_complex",
+        f"[0:v][1:v]overlay=0:0:enable='between(t,0,{hook_dur})'[outv]",
+        "-map", "[outv]",
+        "-map", "0:a",
+        "-c:v", config.OUTPUT_VIDEO_CODEC,
+        "-preset", config.OUTPUT_PRESET,
+        "-crf", str(config.OUTPUT_CRF),
+        "-pix_fmt", config.OUTPUT_PIXEL_FORMAT,
+        "-c:a", config.OUTPUT_AUDIO_CODEC,
+        "-movflags", config.OUTPUT_MOVFLAGS,
+        str(output_path),
+    ]
     run_command(command, config.FFMPEG_TIMEOUT_SECONDS)
 
 
@@ -676,26 +898,47 @@ def _build_ffmpeg_render_command(
     ffmpeg_path: str,
     part_number: int | None = None,
     total_parts: int | None = None,
+    hook_accent_override: str | None = None,
+    hook_brand_override: str | None = None,
+    hook_bg_override: str | None = None,
+    cta_overlay_path: str | None = None,
+    cta_overlay_width: int = 380,
+    cta_overlay_y: int = 100,
+    cta_start_offset: float | None = None,
 ) -> list[str]:
-    command = [
-        ffmpeg_path,
-        "-y",
-        "-stream_loop",
-        "-1",
-        "-i",
-        str(background_video_path),
-        "-i",
-        str(audio_path),
-        "-map_metadata",
-        "-1",
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0",
-        "-t",
-        _format_duration(duration_seconds),
-        "-shortest",
-    ]
+    # Determine CTA mode before building inputs:
+    # share overlay ("Поділись") for parts 1..N-1; subscribe for last part.
+    is_last_part = (
+        part_number is not None
+        and total_parts is not None
+        and part_number >= total_parts
+    )
+    use_share_cta = (
+        config.CTA_ENABLED
+        and part_number is not None
+        and total_parts is not None
+        and not is_last_part
+        and bool(config.CTA_SHARE_OVERLAY_PATH)
+    )
+
+    cta_t0: float | None = None
+    if config.CTA_ENABLED and (cta_overlay_path or use_share_cta):
+        if cta_start_offset is not None:
+            cta_t0 = cta_start_offset
+        else:
+            cta_t0 = max(0.0, duration_seconds - config.CTA_DURATION)
+
+    command = [ffmpeg_path, "-y"]
+    command += ["-stream_loop", "-1", "-i", str(background_video_path)]
+    command += ["-i", str(audio_path)]
+    if use_share_cta and cta_t0 is not None:
+        # -itsoffset delays the share clip start to t0 so animation plays from frame 0.
+        command += ["-itsoffset", f"{cta_t0:.3f}", "-i", config.CTA_SHARE_OVERLAY_PATH]
+    elif cta_overlay_path and cta_t0 is not None:
+        # -itsoffset delays the CTA clip start to exactly t0, so the animation
+        # always plays from frame 0 at the right moment (no phase drift from looping).
+        command += ["-itsoffset", f"{cta_t0:.3f}", "-i", str(cta_overlay_path)]
+    command += ["-map_metadata", "-1", "-t", _format_duration(duration_seconds), "-shortest"]
 
     # Build video filter chain.
     vf_parts: list[str] = [
@@ -708,10 +951,11 @@ def _build_ffmpeg_render_command(
         escaped_path = _escape_ffmpeg_filter_path(ass_path)
         vf_parts.append(f"ass={escaped_path}")
 
-    if part_number is not None and total_parts is not None:
+    font_file = config.HOOK_FRAME_FONT_FILE
+    font_opt = f":fontfile='{font_file}'" if font_file else ""
+
+    if part_number is not None and total_parts is not None and config.PART_BADGE_ENABLED:
         badge_text = f"{part_number}/{total_parts}"
-        font_file = config.HOOK_FRAME_FONT_FILE
-        font_opt = f":fontfile='{font_file}'" if font_file else ""
         # Top-right corner: 40px from right edge, 60px from top.
         # Semi-transparent dark pill background via box option.
         vf_parts.append(
@@ -722,7 +966,86 @@ def _build_ffmpeg_render_command(
             f":box=1:boxcolor=black@0.55:boxborderw=14"
         )
 
-    command.extend(["-vf", ",".join(vf_parts)])
+    if config.CTA_ENABLED and part_number is not None and total_parts is not None:
+        t0 = cta_t0 if cta_t0 is not None else duration_seconds - config.CTA_DURATION
+
+        body_chain = ",".join(vf_parts)
+
+        if use_share_cta:
+            # Share CTA overlay: green-screen "Поділись" button for parts 1..N-1.
+            # No crop — colorkey removes green from the full 1920x1080 source;
+            # scale controls final size; button stays centered from the source layout.
+            share_w = config.CTA_SHARE_OVERLAY_WIDTH
+            share_y = config.CTA_SHARE_OVERLAY_Y
+            filter_complex = (
+                f"[0:v]{body_chain}[body];"
+                f"[2:v]colorkey=0x00ff00:0.35:0.1,"
+                f"scale={share_w}:-1[share_ol];"
+                f"[body][share_ol]overlay=x=(W-w)/2:y={share_y}"
+                f":enable='gte(t,{t0:.3f})'[outv]"
+            )
+        elif cta_overlay_path:
+            # Overlay mode: chromakey green-screen clip over the video (finance channel, last part).
+            # -itsoffset already delays input 2 to t0, so the animation
+            # always plays from frame 0 at the right moment (no phase drift from looping).
+            filter_complex = (
+                f"[0:v]{body_chain}[body];"
+                f"[2:v]crop=576:310:0:360,"
+                f"colorkey=0x00ff00:0.35:0.1,"
+                f"scale={cta_overlay_width}:-1[cta_ol];"
+                f"[body][cta_ol]overlay=x=(W-w)/2:y={cta_overlay_y}"
+                f":enable='gte(t,{t0:.3f})'[outv]"
+            )
+        else:
+            # Card mode: full-screen fade to subscribe card (law channel)
+            fade_d = config.CTA_FADE_IN
+            cta_dur = config.CTA_DURATION
+
+            brand = (
+                hook_brand_override
+                if hook_brand_override is not None
+                else config.HOOK_FRAME_BRAND_LABEL.strip() or "DONT PANIC LAW"
+            )
+            brand_esc = brand.replace("'", "\\'").replace(":", "\\:")
+
+            cta_accent = hook_accent_override or config.HOOK_FRAME_ACCENT_COLOR
+            cta_bg = hook_bg_override or "black"
+
+            next_part = part_number + 1
+            part_info = (
+                f"Ч.{next_part}/{total_parts} — виходить завтра"
+                if next_part <= total_parts
+                else "Серію завершено"
+            )
+            part_info_esc = part_info.replace("'", "\\'").replace(":", "\\:")
+
+            card_chain = ",".join([
+                f"color=c={cta_bg}:s=1080x1920:r=30:d={cta_dur:.3f}",
+                f"drawbox=x=0:y=0:w=14:h=1920:color={cta_accent}:t=fill",
+                f"drawtext=text='{brand_esc}'{font_opt}:fontsize=70:fontcolor={cta_accent}:x=90:y=660:fix_bounds=1",
+                f"drawbox=x=90:y=762:w=900:h=4:color={cta_accent}@0.55:t=fill",
+                f"drawtext=text='{part_info_esc}'{font_opt}:fontsize=50:fontcolor=white@0.5:x=90:y=795:fix_bounds=1",
+                f"drawbox=x=90:y=1075:w=520:h=96:color={cta_accent}:t=fill",
+                f"drawtext=text='Підпишись'{font_opt}:fontsize=54:fontcolor=white:x=148:y=1096:fix_bounds=1",
+                f"drawtext=text='нові серії щодня'{font_opt}:fontsize=44:fontcolor=0xAAAAAA:x=90:y=1200:fix_bounds=1",
+            ])
+            filter_complex = (
+                f"[0:v]{body_chain},fps=30[body];"
+                f"{card_chain}[card];"
+                f"[body][card]xfade=transition=fade:duration={fade_d:.3f}:offset={t0:.3f}[outv]"
+            )
+
+        command.extend([
+            "-filter_complex", filter_complex,
+            "-map", "[outv]",
+            "-map", "1:a:0",
+        ])
+    else:
+        command.extend([
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-vf", ",".join(vf_parts),
+        ])
     command.extend(
         [
             "-c:v",

@@ -117,6 +117,9 @@ def main() -> None:
     hook_bg_override: str | None = None
     hook_accent_override: str | None = None
     hook_brand_override: str | None = None
+    cta_overlay_path: str | None = None
+    cta_overlay_width: int = 380
+    cta_overlay_y: int = 100
 
     if topic is not None:
         series_id = topic.series_id
@@ -133,7 +136,13 @@ def main() -> None:
                 hook_bg_override = profile.get("hook_bg")
                 hook_accent_override = profile.get("hook_accent")
                 hook_brand_override = profile.get("hook_brand", "")
+                # CTA overlay
+                cta_overlay_path = profile.get("cta_overlay_path")
+                cta_overlay_width = profile.get("cta_overlay_width", 380)
+                cta_overlay_y = profile.get("cta_overlay_y", 100)
                 print(f"   channel  : {profile['label']} (bg={hook_bg_override} accent={hook_accent_override} brand={hook_brand_override!r})")
+                if cta_overlay_path:
+                    print(f"   cta      : {cta_overlay_path} w={cta_overlay_width} y={cta_overlay_y}")
                 break
 
     print(f"\n🎬 Starting re-render of {len(session.micro_series.parts)} parts...\n")
@@ -179,6 +188,9 @@ def main() -> None:
                 hook_bg_override=hook_bg_override,
                 hook_accent_override=hook_accent_override,
                 hook_brand_override=hook_brand_override,
+                cta_overlay_path=cta_overlay_path,
+                cta_overlay_width=cta_overlay_width,
+                cta_overlay_y=cta_overlay_y,
             )
             print(f"    ✅ Done ({output_path.stat().st_size // 1024 // 1024} MB)\n")
             results.append(output_path)
@@ -190,6 +202,12 @@ def main() -> None:
     print(f"✅ Re-render complete: {len(results)}/{len(session.micro_series.parts)} parts")
     for r in results:
         print(f"   {r}")
+
+    # Copy videos to export directory (if draft CSV exists for this topic)
+    from src.publer_export import copy_videos_to_export
+    export_dir = copy_videos_to_export(session)
+    if export_dir:
+        print(f"\n📦 Export: {export_dir}")
     print()
 
 

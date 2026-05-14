@@ -1,58 +1,96 @@
 # ttcf — TikTok Content Factory
 
-## Що це таке
+Telegram-бот + Python = автоматизована фабрика короткометражного контенту для двох медіаканалів на трьох платформах одночасно.
 
-Telegram-бот для автоматизованого виробництва україномовних короткометражних відео
-для TikTok. Оператор вибирає тему, записує голосові повідомлення через Telegram,
-бот генерує субтитри, рендерить відео з фоном Pexels та надсилає результат назад.
+**Канали:**
+- `law` → **@dontpaniclaw** — юридична освіта (українська)
+- `finance` → **@moneyua_** — особисті фінанси (українська)
+
+**Платформи:** TikTok · YouTube Shorts · Instagram Reels
 
 ---
 
-## Як це працює
+## Як це працює (myth-bust пайплайн)
 
-1. `/plan` → бот показує список тем із `content_plan.json`
-2. Оператор вибирає тему → отримує заповнений AI-промпт
-3. Оператор вставляє відповідь ChatGPT/Claude у форматі `PARTS: N` як reply
-4. Бот надсилає скрипт кожної частини окремим повідомленням
-5. Оператор записує голосове повідомлення як reply на скрипт кожної частини
-6. Оператор підтверджує (✅) або перезаписує (🔄) кожну озвучку
-7. Бот завантажує фонове відео з Pexels, генерує субтитри (`faster-whisper`),
-   спалює субтитри + аудіо в відео та надсилає результат і метадані в Telegram
+```
+script.txt + metadata.csv   ← оператор готує заздалегідь
+        ↓
+  Telegram: /myth            ← бот показує список slug без озвучки
+        ↓
+  voice message              ← оператор записує голос як reply
+        ↓
+  myth_render.py             ← 3 відео (tiktok / youtube / instagram)
+        ↓
+  data/exports/{channel}/    ← готово для Publer CSV-публікації
+```
+
+**Routing за slug-префіксом:**
+- `finance_*` → `moneyua_content_dir`
+- все інше → `dontpaniclaw_content_dir`
 
 ---
 
 ## Структура проєкту
 
 | Модуль | Що робить |
-|---|---|
-| `src/config.py` | Вся конфігурація, env-driven, єдине джерело налаштувань |
-| `src/telegram_bot.py` | Telegram I/O, state machine (STATE 1–6), голосовий підтвердний flow |
-| `src/advice_pipeline.py` | Доменна логіка: `AdviceVoiceSession`, рендер частин, конвертація OGG→WAV |
+|--------|-----------|
+| `src/config.py` | Вся конфігурація, env-driven. Канальні профілі (`CHANNEL_PROFILES`): кольори хук-кадру, шлях до контент-плану, категорії, export-директорії |
+| `src/telegram_bot.py` | Telegram I/O: myth-голосовий flow, черга рендеру, export після рендеру |
+| `src/myth_pipeline.py` | Ядро myth-bust рендеру: парсинг скрипту, вирівнювання аудіо, збірка фонового відео |
+| `src/myth_queue.py` | Черга slug без озвучки; `slug_to_channel(slug)` — routing за префіксом |
+| `src/myth_session.py` | Стан активної myth-сесії (який slug зараз записується) |
+| `src/render.py` | ffmpeg: hook-фрейм + тіло відео + concat; платформні макети (TikTok V2 / Finance) |
+| `src/subtitles.py` | faster-whisper (primary), пропорційний fallback, SRT→ASS, підсвітка слів |
+| `src/pexels_client.py` | Завантаження B-roll з Pexels API + ffmpeg transcode до 9:16 |
+| `src/publer_export.py` | Копіювання відео і metadata.csv у `data/exports/{channel}/{slug}/` |
+| `src/advice_pipeline.py` | Вторинний пайплайн: мікросерії для advice-формату |
 | `src/content_plan.py` | `ContentTopic` dataclass, R/W `content_plan.json` |
-| `src/render.py` | ffmpeg рендер: hook-кадр + тіло + concat |
-| `src/subtitles.py` | `faster-whisper` (primary), пропорційний fallback, SRT→ASS |
-| `src/pexels_client.py` | Завантаження відео з Pexels API + ffmpeg transcode |
-| `src/publisher.py` | SQLite черга публікацій |
-| `src/ukrainian_tts_adapter.py` | Piper TTS (fallback, якщо `VOICE_MODE=false`) |
-| `src/reddit_intake.py` | Reddit pipeline (вторинний, окремий) |
-| `src/translator.py` | DeepL переклад |
-| `src/utils.py` | `compute_sha256` (допоміжна утиліта) |
+| `src/dashboard/` | FastAPI + HTMX веб-дашборд: управління чергою, контент-планом, налаштуваннями |
+| `src/publisher.py` | SQLite черга публікацій (legacy, для advice-пайплайну) |
+
+**Entry points:**
+
+| Файл | Запуск |
+|------|--------|
+| `run.py` | Головний бот (`make run`) |
+| `myth_render.py` | CLI-рендер одного slug (викликається ботом) |
+| `dashboard.py` | Веб-дашборд |
+| `rerender_session.py` | Перерендер advice-сесії |
+
+---
+
+## Структура даних
+
+```
+data/
+  myth/<slug>/
+    script.txt        ← скрипт з ##bg: секціями і хуком
+    metadata.csv      ← TikTok / YouTube / Instagram метадані
+    voiceover.wav     ← голос оператора (після запису в Telegram)
+
+  exports/
+    dontpaniclaw_content_dir/<slug>/
+      <slug>_tiktok.mp4
+      <slug>_youtube.mp4
+      <slug>_instagram.mp4
+      metadata.csv
+
+    moneyua_content_dir/<slug>/
+      <slug>_tiktok.mp4
+      ...
+```
 
 ---
 
 ## Вимоги
 
 - Python 3.11+
-- `ffmpeg` та `ffprobe` (доступні в `PATH`)
-- Pexels API key (безкоштовний акаунт: pexels.com/api)
-- Telegram Bot Token + Chat ID (BotFather)
-- Respeecher API key (для голосового pipeline)
-- DeepL API key (для Reddit intake / перекладу)
-
-Перевірити наявність інструментів:
+- `ffmpeg` і `ffprobe` (в `PATH`)
+- Pexels API key
+- Telegram Bot Token + Chat ID
 
 ```bash
-make doctor
+make doctor   # перевірити наявність інструментів
 ```
 
 ---
@@ -60,26 +98,15 @@ make doctor
 ## Швидкий старт
 
 ```bash
-# 1. Клонувати репозиторій та перейти в директорію
-git clone <repo> && cd ttcf
+git clone https://github.com/bot-Badass/ttcf && cd ttcf
 
-# 2. Встановити залежності
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Налаштувати середовище
 cp .env.example .env
-# Відредагувати .env: вставити TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-# RESPEECHER_API_KEY, PEXELS_API_KEY
+# Вставити TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, PEXELS_API_KEY
 
-# 4. Активувати змінні
-set -a && source .env && set +a
-
-# 5. Ініціалізувати контент-план (один раз)
-python advice_content_cli.py init
-
-# 6. Запустити бота
-python run.py --bot
+make run
 ```
 
 ---
@@ -87,92 +114,54 @@ python run.py --bot
 ## Команди бота
 
 | Команда | Дія |
-|---|---|
-| `/plan` | Показати список тем, вибрати наступну для запису |
-| `/status` | Поточний стан черги та сесій |
-| `/queue` | Переглянути чергу публікацій |
+|---------|-----|
+| `/myth` | Показати чергу slug без озвучки, вибрати для запису |
+| `/queue` | Черга рендеру |
 
-**Голосовий flow:**
-- Бот надсилає скрипт частини → оператор записує voice message як reply
-- Бот показує кнопки ✅ (підтвердити) та 🔄 (перезаписати)
-- Після підтвердження всіх частин бот рендерить відео автоматично
-
----
-
-## Конфігурація
-
-Ключові змінні `.env`:
-
-| Змінна | Опис | За замовчуванням |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | Токен бота (BotFather) | — |
-| `TELEGRAM_CHAT_ID` | Chat ID оператора | — |
-| `TELEGRAM_POLLING_ENABLED` | Увімкнути polling | `false` |
-| `VOICE_MODE` | `true` = голос від оператора, `false` = Piper TTS | `true` |
-| `RESPEECHER_API_KEY` | Ключ Respeecher | — |
-| `PEXELS_API_KEY` | Ключ Pexels | — |
-| `ADVICE_LOCAL_BACKGROUND_VIDEO` | Локальне тло (замість Pexels) | `""` |
-| `HOOK_FRAME_ENABLED` | Увімкнути заставку | `true` |
-| `HOOK_FRAME_DURATION` | Тривалість заставки (с) | `2.0` |
-| `SUBTITLE_FONT_SIZE` | Розмір шрифту субтитрів | `26` |
-| `SUBTITLE_ALIGNMENT` | Вирівнювання субтитрів (ASS) | `5` |
-| `FFMPEG_TIMEOUT_SECONDS` | Таймаут ffmpeg | `600` |
-| `KMP_DUPLICATE_LIB_OK` | Вимкнути попередження MKL (macOS) | `TRUE` |
+**Myth-голосовий flow:**
+1. Бот надсилає скрипт slug → оператор записує voice message як reply
+2. Голос зберігається як `data/myth/<slug>/voiceover.wav`
+3. Бот ставить рендер у чергу → 3 відео → export у channel-директорію
 
 ---
 
-## Голосовий pipeline
+## Канальні профілі (`src/config.py`)
 
-Стани сесії (`AdviceVoiceSession`):
-
-| STATE | Опис |
-|---|---|
-| 1 | Тема обрана, промпт надіслано оператору |
-| 2 | Оператор вставив скрипт; бот надіслав частини |
-| 3 | Очікування голосових повідомлень від оператора |
-| 4 | Отримано голос для частини, очікування підтвердження |
-| 5 | Всі частини підтверджено, рендеринг у процесі |
-| 6 | Відео готово, надіслано в Telegram |
-
-**Підтверджувальний flow:**
-- Голос не зберігається одразу — він потрапляє в `_pending_voice_confirmations`
-- Тільки після ✅ голос фіксується як підтверджений
-- 🔄 скидає очікування і просить записати знову
+| Параметр | law (dontpaniclaw) | finance (moneyua) |
+|----------|--------------------|-------------------|
+| Хук акцент | `#FF3B30` (червоний) | `#FFD700` (золотий) |
+| Бренд-лейбл | — | `MONEY UA` |
+| Export-директорія | `dontpaniclaw_content_dir` | `moneyua_content_dir` |
+| Категорія за замовчуванням | `ПРАВА` | `ФІНАНСИ` |
 
 ---
 
-## Субтитри
+## Ключові змінні `.env`
 
-- Основний бекенд: `faster-whisper` (CTranslate2, без PyTorch)
-- Fallback: пропорційний розподіл за тривалістю аудіо
-- SRT конвертується в ASS для ffmpeg `subtitles=` фільтра
-- Стиль повністю конфігурується через `.env` (шрифт, розмір, колір, вирівнювання)
-- `SUBTITLE_ALIGNMENT=5` — центр екрану (TikTok-стиль)
-- `SUBTITLE_ALIGNMENT=2` + `SUBTITLE_MARGIN_V=60` — низ екрану (класика)
-
-```bash
-# Перевірити налаштування субтитрів
-python -c "from src import config; print(config.SUBTITLE_FONT_SIZE, config.SUBTITLE_ALIGNMENT)"
-```
+| Змінна | Опис |
+|--------|------|
+| `TELEGRAM_BOT_TOKEN` | Токен бота (BotFather) |
+| `TELEGRAM_CHAT_ID` | Chat ID оператора |
+| `PEXELS_API_KEY` | Ключ Pexels |
+| `VOICE_MODE` | `true` = голос оператора, `false` = Piper TTS |
+| `HOOK_FRAME_ENABLED` | Увімкнути hook-фрейм (default: `true`) |
+| `HOOK_FRAME_DURATION` | Тривалість hook-фрейму (default: `2.0`) |
+| `SUBTITLE_FONT_SIZE` | Розмір шрифту субтитрів (default: `26`) |
+| `FFMPEG_TIMEOUT_SECONDS` | Таймаут ffmpeg (default: `600`) |
 
 ---
 
-## Запуск тестів
+## Тести
 
 ```bash
 make test
-# або
-python -m unittest discover -s tests -v
 ```
 
 ---
 
 ## Відомі обмеження
 
-- **PyTorch/WhisperX**: не підтримується на Python 3.11 macOS без CUDA.
-  Основний бекенд субтитрів — `faster-whisper`, WhisperX не використовується.
-- **Blocking render**: рендеринг виконується синхронно в основному потоці бота.
-- **Один оператор**: бот розрахований на одного оператора (один `TELEGRAM_CHAT_ID`).
-- **Pexels 403**: клієнт завжди надсилає `User-Agent: Mozilla/5.0`.
-- **OGG voice**: Telegram надсилає `.oga` (Opus). Конвертація через
-  `convert_ogg_to_wav()` → 16 kHz mono PCM WAV перед обробкою.
+- Один оператор: бот розрахований на один `TELEGRAM_CHAT_ID`
+- Рендер синхронний у черзі воркера (один slug за раз)
+- `faster-whisper` — основний бекенд субтитрів; WhisperX не підтримується на Python 3.11 macOS без CUDA
+- Telegram надсилає `.oga` (Opus) → конвертується в 16 kHz mono WAV перед обробкою

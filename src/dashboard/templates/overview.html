@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block heading %}Overview{% endblock %}
+
+{% block content %}
+<!-- Auto-refresh every 30s -->
+<div hx-get="/" hx-trigger="every 30s" hx-swap="none" hx-on::after-request="updateStats(event)" style="display:none;"></div>
+
+<!-- Stat cards -->
+<div class="grid grid-cols-2 gap-4 mb-8" style="grid-template-columns: repeat(4, 1fr);">
+  <div class="stat-card">
+    <div class="stat-value" style="color:#6366f1;">{{ plan_stats.pending }}</div>
+    <div class="stat-label">Тем в плані</div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">з {{ plan_stats.total }} загальних</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color:#818cf8;">{{ queue_stats.queued }}</div>
+    <div class="stat-label">В черзі</div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">{{ queue_stats.published }} опубліковано</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color:#f59e0b;">{{ session_stats.active }}</div>
+    <div class="stat-label">Активних сесій</div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">{{ session_stats.complete }} завершено</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color:#22c55e;">{{ render_stats.total }}</div>
+    <div class="stat-label">Рендерів всього</div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">{{ render_stats.total_size_mb }} MB на диску</div>
+  </div>
+</div>
+
+<!-- Active Sessions -->
+{% if active_sessions %}
+<div class="mb-8">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+    <h2 style="font-size:16px;font-weight:600;">🎙 Активні сесії</h2>
+    <a href="/sessions" style="font-size:13px;color:#6366f1;">Всі сесії →</a>
+  </div>
+  <div class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));">
+    {% for s in active_sessions %}
+    <div class="card-base p-5">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="badge-{{ s.channel_key }}" style="font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;">
+            {{ s.channel_label }}
+          </span>
+          <span style="font-size:13px;font-weight:600;color:var(--text-primary);">{{ s.session.topic_id }}</span>
+        </div>
+        <span style="font-size:11px;color:var(--text-secondary);">{{ s.parts_done }}/{{ s.parts_total }} частин</span>
+      </div>
+      <div style="font-size:14px;color:var(--text-primary);margin-bottom:12px;font-weight:500;">{{ s.topic_title[:60] }}{% if s.topic_title|length > 60 %}…{% endif %}</div>
+      <div class="progress-bar-bg mb-4">
+        <div class="progress-bar-fill" style="width:{{ (s.parts_done / s.parts_total * 100)|int if s.parts_total else 0 }}%;background:{% if s.channel_key == 'finance' %}#FFD700{% else %}#FF3B30{% endif %};"></div>
+      </div>
+      <a href="/sessions" class="btn-ghost" style="font-size:12px;display:inline-block;text-decoration:none;">Переглянути →</a>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Recent Queue -->
+<div class="grid gap-8" style="grid-template-columns: 1fr 1fr;">
+  <div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <h2 style="font-size:16px;font-weight:600;">📤 Черга публікацій</h2>
+      <a href="/queue" style="font-size:13px;color:#6366f1;">Всі →</a>
+    </div>
+    {% if recent_queue %}
+    <div class="card-base overflow-hidden">
+      {% for item in recent_queue %}
+      <div class="table-row flex items-center gap-3 px-4 py-3">
+        <!-- Thumb -->
+        <div style="width:40px;height:56px;background:var(--bg-base);border-radius:6px;overflow:hidden;flex-shrink:0;">
+          {% if item.thumb_exists %}
+          <img src="/media/thumb/{{ item.item.thumbnail_path | string | replace('/', '', 1) }}" style="width:100%;height:100%;object-fit:cover;" loading="lazy"/>
+          {% else %}
+          <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);font-size:16px;">🎬</div>
+          {% endif %}
+        </div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:500;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ item.item.title[:45] }}{% if item.item.title|length > 45 %}…{% endif %}</div>
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">{{ item.item.created_at[:10] }}{% if item.video_size_mb %} · {{ item.video_size_mb }} MB{% endif %}</div>
+        </div>
+        <span class="badge-status-{{ item.item.status }}" style="font-size:11px;font-weight:600;padding:3px 8px;border-radius:99px;white-space:nowrap;">{{ item.item.status }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="card-base">
+      <div class="empty-state"><div class="icon">📭</div><div>Черга порожня</div></div>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Recent Renders -->
+  <div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <h2 style="font-size:16px;font-weight:600;">🎬 Останні рендери</h2>
+      <a href="/renders" style="font-size:13px;color:#6366f1;">Всі →</a>
+    </div>
+    {% if recent_renders %}
+    <div class="card-base overflow-hidden">
+      {% for r in recent_renders %}
+      <div class="table-row flex items-center gap-3 px-4 py-3">
+        <div style="width:40px;height:56px;background:var(--bg-base);border-radius:6px;overflow:hidden;flex-shrink:0;cursor:pointer;" onclick="openVideoModal('{{ r.video_path | string | replace('/', '', 1) }}')">
+          {% if r.thumb_path %}
+          <img src="/media/thumb/{{ r.thumb_path | string | replace('/', '', 1) }}" style="width:100%;height:100%;object-fit:cover;" loading="lazy"/>
+          {% else %}
+          <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);font-size:16px;">▶</div>
+          {% endif %}
+        </div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:500;color:var(--text-primary);">{{ r.topic_id }}{% if r.part_number %} ч.{{ r.part_number }}{% endif %}</div>
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">{{ r.size_mb }} MB</div>
+        </div>
+        <span class="badge-{{ r.channel_key }}" style="font-size:11px;font-weight:600;padding:3px 8px;border-radius:99px;">{{ 'MoneyUA' if r.channel_key == 'finance' else 'Law' }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="card-base">
+      <div class="empty-state"><div class="icon">🎞</div><div>Рендерів ще немає</div></div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// HTMX auto-refresh for overview: reload page stats every 30s
+document.addEventListener('htmx:afterRequest', function(evt) {
+  if (evt.detail.requestConfig && evt.detail.requestConfig.path === '/') {
+    // Re-fetch and patch stat values without full reload
+    fetch('/').then(r => r.text()).then(html => {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      document.querySelectorAll('.stat-value').forEach((el, i) => {
+        const fresh = doc.querySelectorAll('.stat-value')[i];
+        if (fresh) el.textContent = fresh.textContent;
+      });
+    });
+  }
+});
+</script>
+{% endblock %}

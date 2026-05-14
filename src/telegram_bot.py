@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import queue as _queue
+import subprocess
+import tempfile
+import threading
 import time
 import urllib.request
 import wave
@@ -9,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Final, Mapping, Sequence
 
 from src import config
+from src.myth_session import clear_pending, get_pending, set_pending
 from src.advice_pipeline import (
     ADVICE_PENDING_STATUS,
     AdvicePipelineError,
@@ -64,12 +69,20 @@ from src.reddit_intake import (
 
 LOGGER = logging.getLogger(__name__)
 
+_VOICE_FILTER_CHAIN = (
+    "afftdn=nf=-25,"
+    "highpass=f=80,"
+    "equalizer=f=3000:width_type=o:width=2:g=3,"
+    "compand=0.3|0.3:1|1:-90/-60|-60/-40|-40/-30|-20/-20:6:0:-90:0.2,"
+    "loudnorm=I=-16:TP=-1.5:LRA=11"
+)
+
 HELP_TEXT: Final[str] = (
     "/plan - переглянути контент-план та керувати темами\n"
     "/status - show Reddit review store stats\n"
     "/fetch - fetch and persist Reddit candidates\n"
     "/list - list approved Reddit stories\n"
-    "/queue - list queued publish items\n"
+    "/queue - список скриптів готових до озвучки\n"
     "/help - show this help"
 )
 TELEGRAM_MAX_MESSAGE_LENGTH: Final[int] = 4096
@@ -125,14 +138,188 @@ _factory_messages: dict[str, int] = {}
 # chat_id → active voice session_id
 _voice_sessions: dict[str, str] = {}
 
+# chat_id → session_id waiting for publication start date input
+_waiting_start_date: dict[str, str] = {}
+
 # chat_id → {part_number: message_id} of sent part-script messages
 _part_script_msg_ids: dict[str, dict[int, int]] = {}
 
 # chat_id → {part_number: (session_id, pending_wav_path)}
 _pending_voice_confirmations: dict[str, dict[int, tuple[str, Path]]] = {}
 
-# chat_id → active channel key ("law" or "finance")
-_active_channel: dict[str, str] = {}
+# chat_id → active channel key ("law" or "finance"), persisted to disk
+_ACTIVE_CHANNELS_PATH = config.DATA_DIR / "active_channels.json"
+
+
+def _load_active_channels() -> dict[str, str]:
+    if _ACTIVE_CHANNELS_PATH.is_file():
+        try:
+            return json.loads(_ACTIVE_CHANNELS_PATH.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_active_channels(d: dict[str, str]) -> None:
+    _ACTIVE_CHANNELS_PATH.write_text(json.dumps(d))
+
+
+_active_channel: dict[str, str] = _load_active_channels()
+
+# chat_id → (accumulated_text, review_id, topic) for multi-message scripts
+_pending_script_buffer: dict[str, tuple[str, str, object]] = {}
+
+# Sequential render queue: each item is (chat_id, slug, send_message_fn)
+_render_queue: _queue.Queue[tuple[str, str, Any]] = _queue.Queue()
+# slugs currently queued or rendering (for deduplication)
+_queued_renders: set[str] = set()
+# Ordered list of {chat_id, slug} for disk persistence; always in sync with _queued_renders.
+_queued_render_items: list[dict[str, str]] = []
+
+
+def _persist_render_queue() -> None:
+    path = config.RENDER_QUEUE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(_queued_render_items, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _execute_render(
+    chat_id: str,
+    slug: str,
+    send_message: Any,
+) -> None:
+    script_path = config.MYTH_DATA_DIR / slug / "script.txt"
+    wav_path = config.MYTH_DATA_DIR / slug / "voiceover.wav"
+    base_output = Path(f"/tmp/{slug}.mp4")
+    platform_labels = {"tiktok": "TikTok", "youtube": "YouTube", "instagram": "Instagram"}
+    stderr_lines: list[str] = []
+
+    send_message(chat_id, f"⏳ Рендеримо `{slug}`...", None)
+
+    try:
+        from src.myth_queue import slug_to_channel
+        channel_key = slug_to_channel(slug)
+        profile = config.CHANNEL_PROFILES.get(channel_key, {})
+        category_file = config.MYTH_DATA_DIR / slug / "category.txt"
+        if category_file.is_file():
+            myth_category = category_file.read_text(encoding="utf-8").strip().upper()
+        else:
+            myth_category = profile.get("myth_category_default", "")
+        proc = subprocess.Popen(
+            [
+                "python", "myth_render.py",
+                "--script", str(script_path),
+                "--audio", str(wav_path),
+                "--channel", channel_key,
+                "--output", str(base_output),
+                "--category", myth_category,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        def _read_stderr() -> None:
+            for line in proc.stderr:
+                stderr_lines.append(line)
+
+        threading.Thread(target=_read_stderr, daemon=True).start()
+
+        for line in proc.stdout:
+            line = line.strip()
+            if line.startswith("PROGRESS: "):
+                label = platform_labels.get(line.split("PROGRESS: ", 1)[1].strip(), line)
+                send_message(chat_id, f"⏳ Рендеримо {label}...", None)
+            elif line.startswith("DONE: "):
+                label = platform_labels.get(line.split("DONE: ", 1)[1].strip(), line)
+                send_message(chat_id, f"✅ {label} готово", None)
+
+        proc.wait()
+
+        if proc.returncode == 0:
+            import shutil as _shutil
+            export_dir = _get_or_create_myth_export_dir(channel_key, slug)
+            base = base_output.with_suffix("")
+            for platform in ["tiktok", "youtube", "instagram"]:
+                src = base.parent / f"{base.name}_{platform}.mp4"
+                if src.is_file():
+                    _shutil.copy2(src, export_dir / f"{export_dir.name}_{platform}.mp4")
+            meta_src = config.MYTH_DATA_DIR / slug / "metadata.csv"
+            if meta_src.is_file():
+                _shutil.copy2(meta_src, export_dir / "metadata.csv")
+            send_message(
+                chat_id,
+                f"✅ Відео і metadata.csv скопійовані в:\n`{export_dir}`",
+                None,
+            )
+            from src.myth_queue import list_unvoiced, slug_to_title
+            remaining = [s for s, _ in list_unvoiced() if s != slug]
+            if remaining:
+                next_slug = remaining[0]
+                next_title = slug_to_title(next_slug)
+                next_markup = {"inline_keyboard": [[
+                    {"text": "🎙 Записати", "callback_data": f"queue_select:{next_slug}"},
+                    {"text": "⏭ Пропустити", "callback_data": "queue_show"},
+                ]]}
+                send_message(chat_id, f"Далі в черзі:\n*{next_title}*", next_markup)
+        else:
+            stderr_tail = "".join(stderr_lines)[-500:]
+            send_message(chat_id, f"❌ Помилка рендеру `{slug}`:\n```{stderr_tail}```", None)
+
+    except Exception as exc:
+        send_message(chat_id, f"❌ Помилка рендеру `{slug}`: {exc}", None)
+
+
+def _enqueue_render(
+    chat_id: str,
+    slug: str,
+    send_message: Any,
+) -> None:
+    if slug in _queued_renders:
+        send_message(chat_id, f"⏳ `{slug}` вже в черзі рендеру.", None)
+        return
+    _queued_renders.add(slug)
+    _queued_render_items.append({"chat_id": chat_id, "slug": slug})
+    _persist_render_queue()
+    position = _render_queue.qsize() + 1
+    if position > 1:
+        send_message(chat_id, f"📥 `{slug}` поставлено в чергу рендеру (позиція {position}).", None)
+    _render_queue.put((chat_id, slug, send_message))
+
+
+def _render_worker() -> None:
+    while True:
+        chat_id, slug, send_message_fn = _render_queue.get()
+        try:
+            _execute_render(chat_id, slug, send_message_fn)
+        finally:
+            _queued_renders.discard(slug)
+            _queued_render_items[:] = [i for i in _queued_render_items if i["slug"] != slug]
+            _persist_render_queue()
+            _render_queue.task_done()
+
+
+threading.Thread(target=_render_worker, daemon=True).start()
+
+
+def _restore_render_queue() -> None:
+    path = config.RENDER_QUEUE_PATH
+    if not path.is_file():
+        return
+    try:
+        items = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        LOGGER.warning("Failed to read render queue from %s", path)
+        return
+    for item in items:
+        chat_id = item.get("chat_id", "")
+        slug = item.get("slug", "")
+        if chat_id and slug and slug not in _queued_renders:
+            LOGGER.info("Restoring render from queue: slug=%s chat_id=%s", slug, chat_id)
+            _enqueue_render(chat_id, slug, _default_send_message)
 
 
 def _get_channel_profile(chat_id: str) -> dict:
@@ -150,12 +337,15 @@ def _channel_prompt_path(chat_id: str) -> Path:
 
 
 def _channel_hook_overrides(chat_id: str) -> dict:
-    """Return hook frame colour overrides for the active channel profile."""
+    """Return hook frame colour overrides and CTA overlay params for the active channel profile."""
     profile = _get_channel_profile(chat_id)
     return {
         "hook_bg_override": profile.get("hook_bg"),
         "hook_accent_override": profile.get("hook_accent"),
         "hook_brand_override": profile.get("hook_brand"),
+        "cta_overlay_path": profile.get("cta_overlay_path"),
+        "cta_overlay_width": profile.get("cta_overlay_width", 380),
+        "cta_overlay_y": profile.get("cta_overlay_y", 100),
     }
 
 
@@ -190,6 +380,8 @@ def run_polling_loop(
     message_editor = edit_message or _default_edit_message
     callback_answerer = answer_callback or _default_answer_callback
     file_downloader = download_file or _default_download_file
+
+    _restore_render_queue()
 
     next_offset: int | None = None
     cycles = 0
@@ -266,6 +458,36 @@ def _process_update(
                 download_file=download_file,
             )
             return
+        chat_id = _require_chat_id(message_payload)
+        if chat_id in _pending_script_buffer:
+            _handle_script_continuation(
+                chat_id=chat_id,
+                message_payload=message_payload,
+                send_message=send_message,
+                edit_message=edit_message,
+            )
+            return
+        if chat_id in _waiting_start_date:
+            _handle_start_date_input(
+                chat_id=chat_id,
+                message_payload=message_payload,
+                queue_store=queue_store,
+                send_message=send_message,
+                send_video=send_video,
+                edit_message=edit_message,
+            )
+            return
+
+        if "voice" in message_payload:
+            slug = get_pending(chat_id)
+            if slug:
+                _handle_myth_voice(
+                    message_payload=message_payload,
+                    slug=slug,
+                    send_message=send_message,
+                    download_file=download_file,
+                )
+                return
 
     if isinstance(callback_query, Mapping):
         _handle_callback_query(
@@ -360,21 +582,22 @@ def _handle_command_message(
         return
 
     if command == "/queue":
-        queued_items = queue_store.list_queued_items()
-        if not queued_items:
-            send_message(chat_id, "No queued publish items.", None)
+        from src.myth_queue import list_unvoiced, slug_to_channel, slug_to_title
+        unvoiced = list_unvoiced()
+        if not unvoiced:
+            send_message(chat_id, "✅ Черга порожня — всі скрипти озвучено.", None)
             return
-        lines = [
-            " | ".join(
-                (
-                    f"asset_id={item.asset_id}",
-                    f"title={item.title}",
-                    f"status={item.status}",
-                )
-            )
-            for item in queued_items
-        ]
-        send_message(chat_id, "\n".join(lines), None)
+        channel_emoji = {"law": "⚖️", "finance": "💰"}
+        rows = []
+        for slug, channel_key in unvoiced:
+            title = slug_to_title(slug)
+            emoji = channel_emoji.get(channel_key, "📄")
+            rows.append([{
+                "text": f"{emoji} {title}",
+                "callback_data": f"queue_select:{slug}",
+            }])
+        markup = {"inline_keyboard": rows}
+        send_message(chat_id, f"🎙 Готові до озвучки ({len(unvoiced)}):", markup)
         return
 
     # Hidden fallbacks — not advertised in HELP_TEXT but still functional.
@@ -419,6 +642,34 @@ def _handle_command_message(
         )
         return
 
+    if command == "/myth":
+        parts = str(message_payload.get("text", "")).strip().split(maxsplit=1)
+        slug = parts[1].strip() if len(parts) > 1 else ""
+        if not slug:
+            text, markup = _build_myth_channel_picker_message(chat_id)
+            send_message(chat_id, text, markup)
+            return
+        from src.myth_queue import slug_to_channel
+        detected_channel = slug_to_channel(slug)
+        _active_channel[chat_id] = detected_channel
+        _save_active_channels(_active_channel)
+        set_pending(chat_id, slug)
+        script_path = config.MYTH_DATA_DIR / slug / "script.txt"
+        if script_path.exists():
+            script_text = _parse_myth_script_text(script_path)
+            send_message(
+                chat_id,
+                f"📝 *Скрипт для озвучки:*\n\n{script_text}\n\n🎙 Надішли голосове повідомлення.",
+                None,
+            )
+        else:
+            send_message(
+                chat_id,
+                f"✅ Готовий записати голос для *{slug}*\n\nНадішли голосове повідомлення.",
+                None,
+            )
+        return
+
     send_message(chat_id, HELP_TEXT, None)
 
 
@@ -435,11 +686,38 @@ def _handle_reply_message(
 
     # Priority 1: voice reply — must be checked before text-reply routing.
     if "voice" in message_payload:
+        slug = get_pending(chat_id)
+        if slug:
+            _handle_myth_voice(
+                message_payload=message_payload,
+                slug=slug,
+                send_message=send_message,
+                download_file=download_file,
+            )
+            return
         _handle_voice_reply(
             message_payload=message_payload,
             send_message=send_message,
             download_file=download_file,
         )
+        return
+
+    # Priority 1b: pending script buffer — Telegram splits long replies into multiple
+    # messages, each still carrying reply_to_message. Handle continuation before
+    # attempting a fresh parse so the second chunk is joined with the first.
+    if chat_id in _pending_script_buffer:
+        _handle_script_continuation(
+            chat_id=chat_id,
+            message_payload=message_payload,
+            send_message=send_message,
+            edit_message=edit_message,
+        )
+        return
+
+    # Priority 1c: active voice session — script already parsed and recording started.
+    # Telegram sometimes delivers a trailing chunk of a long message after the first
+    # chunk was already successfully parsed. Ignore it silently.
+    if chat_id in _voice_sessions:
         return
 
     # Priority 2: reply to an advice prompt message.
@@ -471,11 +749,21 @@ def _handle_reply_message(
                         **_channel_hook_overrides(chat_id),
                     )
                 except AdvicePipelineError as exc:
-                    send_message(
-                        chat_id,
-                        f"❌ Помилка парсингу:\n{exc}\n\nПовна відповідь AI:\n{raw_response[:500]}",
-                        None,
-                    )
+                    err_str = str(exc)
+                    # Telegram splits long messages — buffer partial script and wait for continuation
+                    if "but found" in err_str and int(err_str.split("but found")[1].split()[0]) < int(err_str.split("PARTS:")[1].split()[0]):
+                        _pending_script_buffer[chat_id] = (raw_response, review_id, topic)
+                        send_message(
+                            chat_id,
+                            "⏳ Скрипт обрізаний Telegram. Надішли продовження (решту частин).",
+                            None,
+                        )
+                    else:
+                        send_message(
+                            chat_id,
+                            f"❌ Помилка парсингу:\n{exc}\n\nПовна відповідь AI:\n{raw_response[:500]}",
+                            None,
+                        )
                     return
                 if isinstance(result, AdviceVoiceSession):
                     # voice_mode=True — collect voice recordings part-by-part
@@ -656,6 +944,7 @@ def _handle_callback_query(
         channel_key = callback_data.removeprefix("channel:")
         if channel_key in config.CHANNEL_PROFILES:
             _active_channel[chat_id] = channel_key
+            _save_active_channels(_active_channel)
         text, markup = _build_plan_series_list_message(chat_id)
         _edit_factory(chat_id, text, markup, edit_message)
         answer_callback(callback_id, None)
@@ -766,13 +1055,14 @@ def _handle_callback_query(
                 if msg_id is not None:
                     _part_script_msg_ids.setdefault(chat_id, {})[next_part] = msg_id
         else:
-            _render_and_send_voice_session(
-                chat_id=chat_id,
-                session=saved_session,
-                queue_store=queue_store,
-                send_message=send_message,
-                send_video=send_video,
-                edit_message=edit_message,
+            _waiting_start_date[chat_id] = saved_session.session_id
+            send_message(
+                chat_id,
+                "✅ Всі частини записано!\n\n"
+                "Введи стартову дату публікації — перша частина вийде ввечері цього дня:\n\n"
+                "Формат: РРРР-ММ-ДД\n"
+                "Приклад: 2026-04-25",
+                None,
             )
         return
 
@@ -853,7 +1143,106 @@ def _handle_callback_query(
         answer_callback(callback_id, None)
         return
 
+    if callback_data.startswith("myth_render:"):
+        slug = callback_data.split(":", 1)[1]
+        _enqueue_render(chat_id, slug, send_message)
+        answer_callback(callback_id, None)
+        return
+
+    if callback_data.startswith("myth_channel:"):
+        channel_key = callback_data.removeprefix("myth_channel:")
+        if channel_key in config.CHANNEL_PROFILES:
+            _active_channel[chat_id] = channel_key
+            _save_active_channels(_active_channel)
+        from src.myth_queue import list_unvoiced, slug_to_title
+        channel_emoji = {"law": "⚖️", "finance": "💰"}
+        emoji = channel_emoji.get(channel_key, "📄")
+        unvoiced = [(s, ch) for s, ch in list_unvoiced() if ch == channel_key]
+        if not unvoiced:
+            send_message(chat_id, "✅ Черга порожня для цього каналу.", None)
+            answer_callback(callback_id, None)
+            return
+        rows = []
+        for s, _ in unvoiced:
+            title = slug_to_title(s)
+            rows.append([{
+                "text": f"{emoji} {title}",
+                "callback_data": f"queue_select:{s}",
+            }])
+        markup = {"inline_keyboard": rows}
+        send_message(chat_id, f"🎙 Черга ({len(unvoiced)}):", markup)
+        answer_callback(callback_id, None)
+        return
+
+    if callback_data.startswith("queue_select:"):
+        from src.myth_queue import slug_to_channel
+        slug = callback_data.split(":", 1)[1]
+        channel_key = slug_to_channel(slug)
+        _active_channel[chat_id] = channel_key
+        _save_active_channels(_active_channel)
+        set_pending(chat_id, slug)
+        script_path = config.MYTH_DATA_DIR / slug / "script.txt"
+        channel_label = config.CHANNEL_PROFILES.get(channel_key, {}).get("label", channel_key)
+        if script_path.exists():
+            script_text = _parse_myth_script_text(script_path)
+            send_message(
+                chat_id,
+                f"📺 Канал: *{channel_label}*\n\n📝 *Скрипт:*\n\n{script_text}\n\n🎙 Надішли голосове повідомлення.",
+                None,
+            )
+        else:
+            send_message(
+                chat_id,
+                f"📺 Канал: *{channel_label}*\n✅ Готовий записати *{slug}*\n\n🎙 Надішли голосове повідомлення.",
+                None,
+            )
+        answer_callback(callback_id, None)
+        return
+
+    if callback_data == "queue_show":
+        from src.myth_queue import list_unvoiced, slug_to_channel, slug_to_title
+        unvoiced = list_unvoiced()
+        if not unvoiced:
+            send_message(chat_id, "✅ Черга порожня — всі скрипти озвучено.", None)
+            answer_callback(callback_id, None)
+            return
+        channel_emoji = {"law": "⚖️", "finance": "💰"}
+        rows = []
+        for s, channel_key in unvoiced:
+            title = slug_to_title(s)
+            emoji = channel_emoji.get(channel_key, "📄")
+            rows.append([{
+                "text": f"{emoji} {title}",
+                "callback_data": f"queue_select:{s}",
+            }])
+        markup = {"inline_keyboard": rows}
+        send_message(chat_id, f"🎙 Залишилось в черзі ({len(unvoiced)}):", markup)
+        answer_callback(callback_id, None)
+        return
+
+    if callback_data.startswith("myth_rerecord:"):
+        slug = callback_data.split(":", 1)[1]
+        set_pending(chat_id, slug)
+        send_message(chat_id, "🎙 Надішли нове голосове повідомлення.", None)
+        answer_callback(callback_id, None)
+        return
+
     answer_callback(callback_id, None)
+
+
+def _get_or_create_myth_export_dir(channel_key: str, slug: str) -> Path:
+    """Return export dir for a myth slug under channel-specific subdirectory.
+
+    Structure: data/exports/{channel_subdir}/{slug}/
+    Example:   data/exports/dontpaniclaw_content_dir/shtraf-tck-ne-platy/
+               data/exports/moneyua_content_dir/finance_borhy-2-servisy/
+    """
+    from src.publer_export import EXPORTS_ROOT
+    profile = config.CHANNEL_PROFILES.get(channel_key, {})
+    subdir = profile.get("exports_subdir", f"{channel_key}_content_dir")
+    export_dir = EXPORTS_ROOT / subdir / slug
+    export_dir.mkdir(parents=True, exist_ok=True)
+    return export_dir
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +1267,17 @@ def _handle_plan_command(
 # ---------------------------------------------------------------------------
 # Advice plan UI — message builders
 # ---------------------------------------------------------------------------
+
+def _build_myth_channel_picker_message(chat_id: str) -> tuple[str, Mapping[str, Any]]:
+    """Channel picker for myth voiceover flow."""
+    rows: list[list[Mapping[str, Any]]] = []
+    for key, profile in config.CHANNEL_PROFILES.items():
+        rows.append([{
+            "text": profile["label"],
+            "callback_data": f"myth_channel:{key}",
+        }])
+    return "🎙 Для якого каналу озвучуємо?", {"inline_keyboard": rows}
+
 
 def _build_channel_picker_message(chat_id: str) -> tuple[str, Mapping[str, Any]]:
     """Show channel selector. Active channel is highlighted."""
@@ -1191,6 +1591,89 @@ def _handle_voice_reply(
     _send_voice_confirmation_message(chat_id, session, part_number, pending_wav, send_message)
 
 
+def _parse_myth_script_text(script_path: Path) -> str:
+    """Parse script.txt, strip ##bg: lines and PARTS: header, return numbered blocks."""
+    lines = script_path.read_text(encoding="utf-8").splitlines()
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("PARTS:") or stripped.startswith("##bg:"):
+            if current:
+                blocks.append(" ".join(current))
+                current = []
+        elif stripped:
+            current.append(stripped)
+    if current:
+        blocks.append(" ".join(current))
+    return "\n\n".join(f"{i + 1}. {block}" for i, block in enumerate(blocks))
+
+
+def _handle_myth_voice(
+    *,
+    message_payload: Mapping[str, Any],
+    slug: str,
+    send_message: SendMessageBoundary,
+    download_file: DownloadFileBoundary,
+) -> None:
+    chat_id = _require_chat_id(message_payload)
+    voice_payload = message_payload.get("voice") or message_payload.get("audio")
+    file_id = voice_payload.get("file_id") if isinstance(voice_payload, Mapping) else None
+    if not file_id:
+        send_message(chat_id, "❌ Не вдалось отримати файл.", None)
+        return
+
+    raw_bytes = download_file(str(file_id))
+
+    out_dir = config.MYTH_DATA_DIR / slug
+    out_dir.mkdir(parents=True, exist_ok=True)
+    wav_path = out_dir / "voiceover.wav"
+
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+        tmp.write(raw_bytes)
+        tmp_path = tmp.name
+
+    try:
+        result = subprocess.run(
+            [
+                config.FFMPEG_BIN, "-y", "-i", tmp_path,
+                "-af", _VOICE_FILTER_CHAIN,
+                "-ar", "22050", "-ac", "1",
+                str(wav_path),
+            ],
+            capture_output=True,
+        )
+    except Exception as exc:
+        send_message(chat_id, f"❌ Помилка конвертації аудіо: {exc}", None)
+        LOGGER.error("myth_voice ffmpeg failed for slug=%s: %s", slug, exc)
+        return
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        send_message(chat_id, f"❌ ffmpeg завершився з кодом {result.returncode}", None)
+        LOGGER.error("myth_voice ffmpeg error slug=%s: %s", slug, stderr)
+        return
+
+    clear_pending(chat_id)
+    LOGGER.info("myth_voice saved: slug=%s path=%s", slug, wav_path)
+
+    _enqueue_render(chat_id, slug, send_message)
+
+    keyboard = {
+        "inline_keyboard": [[
+            {"text": "🎙 Наступне", "callback_data": "queue_show"},
+            {"text": "🔄 Перезаписати", "callback_data": f"myth_rerecord:{slug}"},
+        ]]
+    }
+    send_message(
+        chat_id,
+        f"✅ Голос збережено. Рендер в черзі.\n\nЩо далі?",
+        keyboard,
+    )
+
+
 def _send_voice_confirmation_message(
     chat_id: str,
     session: AdviceVoiceSession,
@@ -1212,6 +1695,104 @@ def _send_voice_confirmation_message(
         ]
     }
     send_message(chat_id, text, markup)
+
+
+def _handle_script_continuation(
+    *,
+    chat_id: str,
+    message_payload: Mapping[str, Any],
+    send_message: SendMessageBoundary,
+    edit_message: EditMessageBoundary,
+) -> None:
+    continuation = str(message_payload.get("text", "")).strip()
+    partial_text, review_id, topic = _pending_script_buffer.pop(chat_id)
+    combined = partial_text + "\n" + continuation
+    try:
+        result = receive_operator_scripts(
+            review_id,
+            combined,
+            topic,
+            plan_path=_channel_plan_path(chat_id),
+            **_channel_hook_overrides(chat_id),
+        )
+    except AdvicePipelineError as exc:
+        err_str = str(exc)
+        if "but found" in err_str and int(err_str.split("but found")[1].split()[0]) < int(err_str.split("PARTS:")[1].split()[0]):
+            _pending_script_buffer[chat_id] = (combined, review_id, topic)
+            send_message(chat_id, "⏳ Ще не повний скрипт. Надішли наступне продовження.", None)
+        else:
+            send_message(
+                chat_id,
+                f"❌ Помилка парсингу:\n{exc}\n\nПовна відповідь AI:\n{combined[:500]}",
+                None,
+            )
+        return
+
+    config.HOOK_FRAME_CATEGORY = _channel_category(chat_id, topic.series_id)
+    if isinstance(result, AdviceVoiceSession):
+        _voice_sessions[chat_id] = result.session_id
+        _edit_factory(chat_id, *_build_voice_collection_message(result, topic), edit_message)
+        msg_id = _send_part_script_message(chat_id, result, 1, send_message)
+        if msg_id is not None:
+            _part_script_msg_ids.setdefault(chat_id, {})[1] = msg_id
+
+
+def _handle_start_date_input(
+    *,
+    chat_id: str,
+    message_payload: Mapping[str, Any],
+    queue_store: PublishQueueStore,
+    send_message: SendMessageBoundary,
+    send_video: SendVideoBoundary,
+    edit_message: EditMessageBoundary,
+) -> None:
+    from datetime import datetime as _dt
+    from src.publer_export import find_export_dir, fill_csv_dates
+
+    date_str = str(message_payload.get("text", "")).strip()
+    session_id = _waiting_start_date.get(chat_id, "")
+
+    try:
+        _dt.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        send_message(
+            chat_id,
+            "❌ Невірний формат. Введи дату так:\n\nРРРР-ММ-ДД\nПриклад: 2026-04-25",
+            None,
+        )
+        return
+
+    # Fill CSV if draft exists
+    session = get_voice_session(session_id)
+    if session is not None:
+        export_dir = find_export_dir(session.topic_id)
+        if export_dir is not None:
+            from src.publer_export import draft_csv_path, _PLATFORMS
+            existing = [p for p in _PLATFORMS if draft_csv_path(export_dir, p).is_file()]
+            if existing:
+                fill_csv_dates(export_dir, date_str)
+                names = ", ".join(f"publer_{p}.csv" for p in existing)
+                send_message(
+                    chat_id,
+                    f"📅 CSV готові - {export_dir.name}/\n{names}",
+                    None,
+                )
+            else:
+                send_message(chat_id, "⚠️ Draft CSV не знайдено - дата не збережена.", None)
+        else:
+            send_message(chat_id, "⚠️ Папку експорту не знайдено — дата не збережена.", None)
+
+    _waiting_start_date.pop(chat_id, None)
+
+    if session is not None:
+        _render_and_send_voice_session(
+            chat_id=chat_id,
+            session=session,
+            queue_store=queue_store,
+            send_message=send_message,
+            send_video=send_video,
+            edit_message=edit_message,
+        )
 
 
 def _render_and_send_voice_session(
@@ -1243,6 +1824,12 @@ def _render_and_send_voice_session(
     except AdvicePipelineError as exc:
         send_message(chat_id, f"❌ Помилка рендеру: {exc}", None)
         return
+
+    # Copy videos to export directory
+    from src.publer_export import copy_videos_to_export
+    export_dir = copy_videos_to_export(session)
+    if export_dir:
+        send_message(chat_id, f"📦 Відео скопійовано → {export_dir.name}", None)
 
     total_rendered = len(results)
     if topic is not None:

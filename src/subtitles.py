@@ -39,7 +39,7 @@ class ScriptToken:
 
 
 WordAlignmentBoundary = Callable[[Path, str], Sequence[AlignedWord]]
-SubtitleWriterBoundary = Callable[[Sequence[SubtitlePhrase], Path], None]
+SubtitleWriterBoundary = Callable[..., None]
 
 
 def generate_subtitle_file(
@@ -47,6 +47,7 @@ def generate_subtitle_file(
     script: str,
     output_dir: Path,
     *,
+    highlight_color: str | None = None,
     align_words: WordAlignmentBoundary | None = None,
     subtitle_writer: SubtitleWriterBoundary | None = None,
     alignment_mode: str | None = None,
@@ -82,9 +83,12 @@ def generate_subtitle_file(
     if not phrases:
         raise SubtitleGenerationError("Subtitle alignment did not produce subtitle phrases.")
 
+    highlighted_words = _extract_highlighted_words(script) if highlight_color else frozenset()
+
     output_dir.mkdir(parents=True, exist_ok=True)
-    subtitle_path = output_dir / "subtitles.srt"
-    (subtitle_writer or _write_srt_with_pysubs2)(phrases, subtitle_path)
+    subtitle_path = output_dir / "subtitles.ass"
+    writer = subtitle_writer or _write_ass_with_pysubs2
+    writer(phrases, subtitle_path, highlighted_words=highlighted_words, highlight_color=highlight_color or "")
     return subtitle_path
 
 
@@ -537,23 +541,81 @@ def _normalize_for_comparison(text: str) -> str:
     return " ".join(stripped_text.casefold().split())
 
 
-def _write_srt_with_pysubs2(phrases: Sequence[SubtitlePhrase], subtitle_path: Path) -> None:
+def _extract_highlighted_words(script: str) -> frozenset[str]:
+    marked = re.findall(r"\*\*(.+?)\*\*", script)
+    result: set[str] = set()
+    for phrase in marked:
+        for token in phrase.split():
+            normalized = _normalize_for_comparison(token)
+            if normalized:
+                result.add(normalized)
+    return frozenset(result)
+
+
+def _hex_to_ass_color(hex_color: str) -> str:
+    """Convert #RRGGBB to ASS inline color tag &H00BBGGRR&."""
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        return ""
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"&H00{b:02X}{g:02X}{r:02X}&"
+
+
+def _apply_highlight_tags(
+    text: str,
+    highlighted_words: frozenset[str],
+    ass_color: str,
+) -> str:
+    if not highlighted_words or not ass_color:
+        return text
+    tokens = text.split()
+    result = []
+    for token in tokens:
+        if _normalize_for_comparison(token) in highlighted_words:
+            result.append(f"{{\\c{ass_color}}}{token}{{\\c&HFFFFFF&}}")
+        else:
+            result.append(token)
+    return " ".join(result)
+
+
+def _write_ass_with_pysubs2(
+    phrases: Sequence[SubtitlePhrase],
+    subtitle_path: Path,
+    *,
+    highlighted_words: frozenset[str] = frozenset(),
+    highlight_color: str = "",
+    **_kwargs: object,
+) -> None:
     try:
         import pysubs2
     except ModuleNotFoundError as exc:
         raise SubtitleGenerationError("pysubs2 is not installed.") from exc
 
     subs = pysubs2.SSAFile()
+
+    style = subs.styles["Default"]
+    style.fontname = "Arial"
+    style.fontsize = 52
+    style.bold = True
+    style.primarycolor = pysubs2.Color(255, 255, 255, 0)
+    style.outlinecolor = pysubs2.Color(0, 0, 0, 0)
+    style.outline = 3
+    style.shadow = 1
+    style.alignment = 5
+
+    ass_highlight = _hex_to_ass_color(highlight_color) if highlight_color else ""
+
     for phrase in phrases:
+        text = _apply_highlight_tags(phrase.text, highlighted_words, ass_highlight)
         subs.events.append(
             pysubs2.SSAEvent(
                 start=int(round(phrase.start_seconds * 1000)),
                 end=int(round(phrase.end_seconds * 1000)),
-                text=phrase.text,
+                text=text,
             )
         )
 
     try:
-        subs.save(str(subtitle_path), format_="srt")
+        subs.save(str(subtitle_path), format_="ass")
     except Exception as exc:
         raise SubtitleGenerationError(f"Failed to save subtitle file: {exc}") from exc

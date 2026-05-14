@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+{% block title %}Сесії{% endblock %}
+{% block heading %}🎙 Голосові сесії{% endblock %}
+
+{% block content %}
+
+<!-- Filter tabs -->
+<div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap;">
+  {% for val, label in [('all','Всі'), ('recording','Запис'), ('ready','До рендеру'), ('rendered','Зрендеровано')] %}
+  <a href="/sessions?status={{ val }}" style="padding:7px 16px;border-radius:8px;font-size:13px;font-weight:500;text-decoration:none;transition:all .15s;
+    {% if filter_status == val %}background:rgba(99,102,241,.2);border:1px solid rgba(99,102,241,.4);color:#818cf8;
+    {% else %}background:var(--bg-card);border:1px solid var(--border);color:var(--text-secondary);{% endif %}">
+    {{ label }}
+  </a>
+  {% endfor %}
+</div>
+
+{% if sessions %}
+<div class="grid gap-5" style="grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));">
+  {% for s in sessions %}
+
+  {% if s.videos_done > 0 %}
+    {% set state = 'rendered' %}
+  {% elif s.is_complete %}
+    {% set state = 'ready' %}
+  {% else %}
+    {% set state = 'recording' %}
+  {% endif %}
+
+  <div class="card-base p-5" id="session-{{ s.session.review_id }}">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px;">
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+          <span class="badge-{{ s.channel_key }}" style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;">{{ s.channel_label }}</span>
+          <span style="font-size:12px;font-weight:700;color:var(--text-secondary);">{{ s.session.topic_id }}</span>
+          {% if s.series_title %}<span style="font-size:11px;color:var(--text-secondary);">· {{ s.series_title }}</span>{% endif %}
+        </div>
+        <div style="font-size:14px;color:var(--text-primary);font-weight:500;line-height:1.4;">{{ s.topic_title[:65] }}{% if s.topic_title|length > 65 %}…{% endif %}</div>
+      </div>
+      <!-- State badge -->
+      <div style="flex-shrink:0;margin-left:12px;">
+        {% if state == 'rendered' %}
+        <span class="badge-status-rendered" style="font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;white-space:nowrap;">
+          🎬 {{ s.videos_done }}/{{ s.parts_total }} відео
+        </span>
+        {% elif state == 'ready' %}
+        <span class="badge-status-queued" style="font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;white-space:nowrap;">
+          ⏳ До рендеру
+        </span>
+        {% else %}
+        <span class="badge-status-in_progress" style="font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;white-space:nowrap;">
+          🎙 {{ s.parts_done }}/{{ s.parts_total }}
+        </span>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Parts — compact for rendered, detailed for recording -->
+    {% if state == 'recording' %}
+    <div style="margin-bottom:16px;">
+      {% for i in range(s.parts_total) %}
+      {% set voice_done = i < s.parts_done %}
+      {% set pnum = i + 1 %}
+      <div style="display:flex;align-items:center;gap:10px;padding:7px 0;{% if not loop.last %}border-bottom:1px solid rgba(255,255,255,.04);{% endif %}">
+        <div style="width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;
+          {% if voice_done %}background:rgba(34,197,94,.2);color:#22c55e;border:1px solid rgba(34,197,94,.3);
+          {% else %}background:rgba(107,114,128,.15);color:var(--text-secondary);border:1px solid var(--border);{% endif %}">
+          {{ pnum }}
+        </div>
+        <div style="flex:1;font-size:12px;color:{{ '#22c55e' if voice_done else 'var(--text-secondary)' }};">
+          {{ '✅ записано' if voice_done else '⏳ очікує' }}
+        </div>
+        {% if not voice_done %}
+        <div style="display:flex;gap:4px;">
+          <button class="btn-ghost" style="font-size:11px;padding:3px 8px;"
+            onclick="sendPrompt('{{ s.session.session_id }}', {{ pnum }}, this)">📣 TG</button>
+          <label style="cursor:pointer;">
+            <span class="btn-ghost" style="font-size:11px;padding:3px 8px;display:inline-block;">⬆ Upload</span>
+            <input type="file" accept=".ogg,.mp3,.m4a,.wav,.oga" style="display:none;"
+              onchange="uploadAudio('{{ s.session.session_id }}', {{ pnum }}, this)">
+          </label>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <!-- Compact parts row for ready/rendered -->
+    <div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;">
+      {% for i in range(s.parts_total) %}
+      {% set pnum = i + 1 %}
+      {% set has_video = s.videos_done >= pnum %}
+      <div style="display:flex;align-items:center;gap:4px;padding:4px 8px;border-radius:6px;font-size:11px;
+        {% if has_video %}background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.25);color:#22c55e;
+        {% else %}background:var(--bg-base);border:1px solid var(--border);color:var(--text-secondary);{% endif %}">
+        {{ '🎬' if has_video else '⏳' }} ч.{{ pnum }}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Meta -->
+    <div style="display:flex;gap:14px;margin-bottom:14px;font-size:11px;color:var(--text-secondary);">
+      {% if s.bg_size_mb %}<span>🎥 {{ s.bg_size_mb }} MB</span>{% endif %}
+      <span>📅 {{ s.session.created_at[:10] }}</span>
+    </div>
+
+    <!-- Actions -->
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      {% if state == 'rendered' %}
+        <button class="btn-success" style="font-size:13px;flex:1;"
+          onclick="markPublished('{{ s.session.session_id }}', this)">
+          ✅ Опубліковано
+        </button>
+        <button class="btn-primary" style="font-size:12px;"
+          hx-post="/api/sessions/{{ s.session.review_id }}/render"
+          hx-swap="none"
+          hx-on::after-request="handleRenderStart(event, '{{ s.session.review_id }}')">
+          🔄 Перерендер
+        </button>
+        <button class="btn-ghost" style="font-size:12px;"
+          onclick="previewHook('{{ s.session.session_id }}', 1, {{ s.parts_total }})">👁</button>
+
+      {% elif state == 'ready' %}
+        <button class="btn-primary" style="font-size:13px;flex:1;"
+          hx-post="/api/sessions/{{ s.session.review_id }}/render"
+          hx-swap="none"
+          hx-on::after-request="handleRenderStart(event, '{{ s.session.review_id }}')">
+          🎬 Зрендерити
+        </button>
+        <button class="btn-ghost" style="font-size:12px;"
+          onclick="previewHook('{{ s.session.session_id }}', 1, {{ s.parts_total }})">👁 Хук</button>
+
+      {% else %}
+        <button class="btn-primary" disabled style="opacity:.4;cursor:not-allowed;font-size:13px;">🎬 Зрендерити</button>
+        <button class="btn-ghost" style="font-size:12px;"
+          onclick="previewHook('{{ s.session.session_id }}', 1, {{ s.parts_total }})">👁 Хук</button>
+      {% endif %}
+    </div>
+
+    <!-- Render log (hidden by default) -->
+    <div id="log-{{ s.session.review_id }}" style="display:none;margin-top:14px;">
+      <div style="background:var(--bg-base);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:11px;font-family:monospace;color:#22c55e;max-height:160px;overflow-y:auto;white-space:pre-wrap;"
+           id="log-text-{{ s.session.review_id }}"></div>
+    </div>
+
+  </div>
+  {% endfor %}
+</div>
+
+{% else %}
+<div class="card-base">
+  <div class="empty-state">
+    <div class="icon">🎙</div>
+    <div style="font-size:15px;font-weight:500;margin-bottom:6px;">
+      {% if filter_status == 'recording' %}Немає активних записів
+      {% elif filter_status == 'ready' %}Немає сесій, готових до рендеру
+      {% elif filter_status == 'rendered' %}Немає зрендерованих сесій
+      {% else %}Сесій не знайдено{% endif %}
+    </div>
+    <div style="font-size:13px;color:var(--text-secondary);">
+      {% if filter_status == 'recording' %}Почніть нову серію через Контент-план → ▶ Почати
+      {% else %}Спробуйте інший фільтр{% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function markPublished(sessionId, btn) {
+  if (!confirm('Позначити всі відрендеровані відео цієї сесії як опубліковані?')) return;
+  btn.disabled = true;
+  btn.textContent = '⏳…';
+  fetch('/api/sessions/' + sessionId + '/mark-published', {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+      showToast(data.message, data.ok ? 'success' : 'error');
+      if (data.ok) setTimeout(() => location.reload(), 700);
+      else { btn.disabled = false; btn.textContent = '✅ Опубліковано'; }
+    })
+    .catch(() => { btn.disabled = false; btn.textContent = '✅ Опубліковано'; showToast('Помилка', 'error'); });
+}
+
+function handleRenderStart(event, reviewId) {
+  const resp = JSON.parse(event.detail.xhr.responseText);
+  if (resp.status === 'already_running') {
+    showToast('Рендер вже запущений', 'error');
+    streamLog(reviewId);
+    return;
+  }
+  const logDiv = document.getElementById('log-' + reviewId);
+  const logText = document.getElementById('log-text-' + reviewId);
+  logDiv.style.display = 'block';
+  logText.textContent = '⚙️ Запускаємо рендер...\n';
+  streamLog(reviewId);
+}
+
+function previewHook(sessionId, partNumber, totalParts) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div style="position:relative;display:flex;flex-direction:column;align-items:center;gap:12px;">
+      <div id="hook-preview-wrap" style="width:min(340px,90vw);border-radius:12px;overflow:hidden;background:#000;aspect-ratio:9/16;display:flex;align-items:center;justify-content:center;">
+        <div style="color:var(--text-secondary);font-size:13px;text-align:center;padding:20px;">⏳ Рендеримо хук-кадр…<br><span style="font-size:11px;opacity:.6;">~5–15 сек</span></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn-ghost" style="font-size:12px;" onclick="changeHookPart(${JSON.stringify(sessionId)}, _hookPart - 1, ${totalParts})">‹</button>
+        <span id="hook-part-label" style="font-size:12px;color:var(--text-secondary);min-width:80px;text-align:center;">Частина ${partNumber}</span>
+        <button class="btn-ghost" style="font-size:12px;" onclick="changeHookPart(${JSON.stringify(sessionId)}, _hookPart + 1, ${totalParts})">›</button>
+      </div>
+      <button onclick="this.closest('.modal-overlay').remove()" style="position:absolute;top:-12px;right:-12px;background:#1a1d27;border:1px solid var(--border);color:var(--text-secondary);width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>
+    </div>`;
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+  window._hookPart = partNumber;
+  loadHookPreview(sessionId, partNumber);
+}
+
+function loadHookPreview(sessionId, partNumber) {
+  const wrap = document.getElementById('hook-preview-wrap');
+  const label = document.getElementById('hook-part-label');
+  if (label) label.textContent = `Частина ${partNumber}`;
+  if (!wrap) return;
+  wrap.innerHTML = `<div style="color:var(--text-secondary);font-size:13px;text-align:center;padding:20px;">⏳ Рендеримо…</div>`;
+  const img = new Image();
+  img.onload = () => { wrap.innerHTML = ''; img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;'; wrap.appendChild(img); };
+  img.onerror = () => { wrap.innerHTML = '<div style="color:#ef4444;font-size:13px;text-align:center;padding:20px;">❌ Помилка preview</div>'; };
+  img.src = `/api/sessions/${sessionId}/parts/${partNumber}/hook-preview?t=${Date.now()}`;
+}
+
+function changeHookPart(sessionId, part, total) {
+  if (part < 1 || part > total) return;
+  window._hookPart = part;
+  loadHookPreview(sessionId, part);
+}
+
+function sendPrompt(sessionId, partNumber, btn) {
+  btn.disabled = true; btn.textContent = '…';
+  fetch(`/api/sessions/${sessionId}/parts/${partNumber}/send-prompt`, {method: 'POST'})
+    .then(r => r.json())
+    .then(data => { btn.disabled = false; btn.textContent = '📣 TG'; showToast(data.message, data.ok ? 'success' : 'error'); })
+    .catch(() => { btn.disabled = false; btn.textContent = '📣 TG'; showToast('Помилка', 'error'); });
+}
+
+function uploadAudio(sessionId, partNumber, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const label = input.previousElementSibling;
+  label.textContent = '…';
+  const fd = new FormData();
+  fd.append('file', file);
+  fetch(`/api/sessions/${sessionId}/parts/${partNumber}/upload-audio`, {method: 'POST', body: fd})
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) { showToast(data.message, 'success'); setTimeout(() => location.reload(), 800); }
+      else { label.textContent = '⬆ Upload'; showToast(data.message, 'error'); }
+    })
+    .catch(() => { label.textContent = '⬆ Upload'; showToast('Помилка', 'error'); });
+}
+
+function streamLog(reviewId) {
+  const logDiv = document.getElementById('log-' + reviewId);
+  const logText = document.getElementById('log-text-' + reviewId);
+  logDiv.style.display = 'block';
+  const es = new EventSource('/api/sessions/' + reviewId + '/log/stream');
+  es.onmessage = function(e) {
+    const data = JSON.parse(e.data);
+    if (data.text) { logText.textContent += data.text.replace(/\\n/g, '\n'); logText.scrollTop = logText.scrollHeight; }
+    if (data.done) { es.close(); showToast('✅ Рендер завершено!', 'success'); setTimeout(() => location.reload(), 1500); }
+  };
+  es.onerror = function() { es.close(); showToast('⚠️ З\'єднання перервано', 'error'); };
+}
+</script>
+{% endblock %}

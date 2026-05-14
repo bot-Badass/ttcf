@@ -41,7 +41,7 @@ class SubtitleTests(unittest.TestCase):
             )
 
             align_words.assert_called_once_with(audio_path, "Hello world")
-            self.assertEqual(subtitle_path, temp_dir / "subtitles.srt")
+            self.assertEqual(subtitle_path, temp_dir / "subtitles.ass")
 
     def test_phrase_grouping_respects_limits(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_name:
@@ -575,7 +575,7 @@ class SubtitleTests(unittest.TestCase):
             )
 
 
-def _write_test_srt(phrases, subtitle_path: Path) -> None:
+def _write_test_srt(phrases, subtitle_path: Path, **_kwargs: object) -> None:
     entries: list[str] = []
     for index, phrase in enumerate(phrases, start=1):
         entries.append(

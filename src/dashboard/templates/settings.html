@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Налаштування{% endblock %}
+{% block heading %}⚙️ Налаштування{% endblock %}
+
+{% block content %}
+
+<div class="grid gap-6" style="grid-template-columns: 1fr 1fr;">
+
+  <!-- Env vars -->
+  <div>
+    <h2 style="font-size:15px;font-weight:600;margin-bottom:14px;">🔑 Змінні середовища</h2>
+    <div class="card-base overflow-hidden">
+      {% for v in env_vars %}
+      <div class="table-row flex items-center justify-between px-4 py-3">
+        <div style="font-size:13px;font-weight:500;color:var(--text-primary);font-family:monospace;">{{ v.name }}</div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          {% if not v.is_secret and v.value %}
+          <span style="font-size:12px;color:var(--text-secondary);font-family:monospace;">{{ v.value }}</span>
+          {% endif %}
+          {% if v.set %}
+          <span style="color:#22c55e;font-size:16px;">✅</span>
+          {% else %}
+          <span style="color:#ef4444;font-size:16px;">❌</span>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Channel profiles -->
+  <div>
+    <h2 style="font-size:15px;font-weight:600;margin-bottom:14px;">📡 Профілі каналів</h2>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      {% for ch in channels %}
+      <div class="card-base p-5">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+          <div style="width:28px;height:28px;border-radius:8px;background:{{ ch.hook_bg }};border:2px solid {{ ch.hook_accent }};flex-shrink:0;"></div>
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text-primary);">{{ ch.label }}</div>
+            <div style="font-size:11px;color:var(--text-secondary);">{{ ch.key }}</div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;">
+          <div>
+            <div style="color:var(--text-secondary);margin-bottom:3px;">BG Color</div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <div style="width:14px;height:14px;border-radius:3px;background:{{ ch.hook_bg }};border:1px solid var(--border);flex-shrink:0;"></div>
+              <code style="color:var(--text-primary);">{{ ch.hook_bg }}</code>
+            </div>
+          </div>
+          <div>
+            <div style="color:var(--text-secondary);margin-bottom:3px;">Accent</div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <div style="width:14px;height:14px;border-radius:3px;background:{{ ch.hook_accent }};border:1px solid var(--border);flex-shrink:0;"></div>
+              <code style="color:var(--text-primary);">{{ ch.hook_accent }}</code>
+            </div>
+          </div>
+          {% if ch.hook_brand %}
+          <div style="grid-column:span 2;">
+            <div style="color:var(--text-secondary);margin-bottom:3px;">Brand Label</div>
+            <code style="color:var(--text-primary);">{{ ch.hook_brand }}</code>
+          </div>
+          {% endif %}
+        </div>
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+          <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;">Content Plan</div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="color:{{ '#22c55e' if ch.plan_exists else '#ef4444' }};">{{ '✅' if ch.plan_exists else '❌' }}</span>
+            <code style="font-size:11px;color:var(--text-secondary);word-break:break-all;">{{ ch.plan_path.split('/')[-1] }}</code>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+</div>
+
+<!-- Path vars -->
+<div style="margin-top:24px;">
+  <h2 style="font-size:15px;font-weight:600;margin-bottom:14px;">📁 Шляхи даних</h2>
+  <div class="card-base overflow-hidden">
+    {% for p in path_vars %}
+    <div class="table-row flex items-center gap-4 px-4 py-3">
+      <span style="color:{{ '#22c55e' if p.exists else '#ef4444' }};font-size:15px;flex-shrink:0;">{{ '✅' if p.exists else '❌' }}</span>
+      <div style="font-size:12px;font-weight:600;color:var(--text-secondary);font-family:monospace;width:200px;flex-shrink:0;">{{ p.name }}</div>
+      <div style="font-size:12px;color:var(--text-primary);font-family:monospace;word-break:break-all;">{{ p.path }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+{% endblock %}

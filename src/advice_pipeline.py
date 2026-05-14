@@ -355,6 +355,9 @@ def receive_operator_scripts(
     hook_bg_override: str | None = None,
     hook_accent_override: str | None = None,
     hook_brand_override: str | None = None,
+    cta_overlay_path: str | None = None,
+    cta_overlay_width: int = 380,
+    cta_overlay_y: int = 100,
 ) -> tuple[AdviceRenderResult, ...] | AdviceVoiceSession:
     """Full pipeline for multi-script AI response.
 
@@ -404,6 +407,9 @@ def receive_operator_scripts(
             hook_bg_override=hook_bg_override,
             hook_accent_override=hook_accent_override,
             hook_brand_override=hook_brand_override,
+            cta_overlay_path=cta_overlay_path,
+            cta_overlay_width=cta_overlay_width,
+            cta_overlay_y=cta_overlay_y,
         )
         LOGGER.info(
             "Voice session created via receive_operator_scripts: review_id=%s session_id=%s",
@@ -878,6 +884,9 @@ class AdviceVoiceSession:
     hook_bg_override: str | None = None
     hook_accent_override: str | None = None
     hook_brand_override: str | None = None
+    cta_overlay_path: str | None = None
+    cta_overlay_width: int = 380
+    cta_overlay_y: int = 100
 
 
 def _serialize_voice_session(s: AdviceVoiceSession) -> dict:
@@ -909,6 +918,9 @@ def _serialize_voice_session(s: AdviceVoiceSession) -> dict:
         "hook_bg_override": s.hook_bg_override,
         "hook_accent_override": s.hook_accent_override,
         "hook_brand_override": s.hook_brand_override,
+        "cta_overlay_path": s.cta_overlay_path,
+        "cta_overlay_width": s.cta_overlay_width,
+        "cta_overlay_y": s.cta_overlay_y,
     }
 
 
@@ -948,6 +960,9 @@ def _deserialize_voice_session(data: dict) -> AdviceVoiceSession:
         hook_bg_override=data.get("hook_bg_override"),
         hook_accent_override=data.get("hook_accent_override"),
         hook_brand_override=data.get("hook_brand_override"),
+        cta_overlay_path=data.get("cta_overlay_path"),
+        cta_overlay_width=data.get("cta_overlay_width", 380),
+        cta_overlay_y=data.get("cta_overlay_y", 100),
     )
 
 
@@ -1007,6 +1022,9 @@ def create_voice_session(
     hook_bg_override: str | None = None,
     hook_accent_override: str | None = None,
     hook_brand_override: str | None = None,
+    cta_overlay_path: str | None = None,
+    cta_overlay_width: int = 380,
+    cta_overlay_y: int = 100,
 ) -> AdviceVoiceSession:
     """Create a new AdviceVoiceSession with all slots initialised to None."""
     now = _utc_now()
@@ -1024,6 +1042,9 @@ def create_voice_session(
         hook_bg_override=hook_bg_override,
         hook_accent_override=hook_accent_override,
         hook_brand_override=hook_brand_override,
+        cta_overlay_path=cta_overlay_path,
+        cta_overlay_width=cta_overlay_width,
+        cta_overlay_y=cta_overlay_y,
     )
     existing = _load_voice_sessions(store_path)
     _write_voice_sessions(store_path, (*existing, session))
@@ -1193,6 +1214,9 @@ def render_voice_session(
                 session.hook_bg_override,
                 session.hook_accent_override,
                 session.hook_brand_override,
+                session.cta_overlay_path,
+                session.cta_overlay_width,
+                session.cta_overlay_y,
             )
         except RenderError as exc:
             LOGGER.error(

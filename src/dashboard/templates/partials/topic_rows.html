@@ -1,0 +1,21 @@
+{% for et in topics %}
+<tr class="table-row">
+  <td style="padding:12px 16px;font-size:13px;font-weight:700;color:var(--text-secondary);">{{ et.topic.topic_id }}</td>
+  <td style="padding:12px 16px;">
+    <span class="badge-{{ et.channel_key }}" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px;">{{ et.channel_label }}</span>
+  </td>
+  <td style="padding:12px 16px;font-size:13px;color:var(--text-primary);">{{ et.topic.title[:65] }}{% if et.topic.title|length > 65 %}…{% endif %}</td>
+  <td style="padding:12px 16px;">
+    {% if et.has_active_session %}
+    <span class="badge-status-in_progress" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:99px;">🎙 Записується</span>
+    {% elif et.topic.status == 'rendered' %}
+    <span class="badge-status-rendered" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:99px;">✅ Готово</span>
+    {% else %}
+    <span class="badge-status-pending" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:99px;">⏳ Очікує</span>
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}
+<tr>
+  <td colspan="4" style="padding:10px 16px;font-size:12px;color:var(--text-secondary);">{{ total }} тем</td>
+</tr>

@@ -19,6 +19,7 @@ env/
 .claude/
 
 # Runtime data — large files and machine state
+data/active_channels.json
 data/advice/
 data/approved/
 data/inbox/

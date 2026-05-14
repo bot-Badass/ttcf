@@ -23,6 +23,7 @@ REJECTED_DIR: Final[Path] = DATA_DIR / "rejected"
 LOG_DIR: Final[Path] = DATA_DIR / "logs"
 MANIFEST_PATH: Final[Path] = DATA_DIR / "manifests" / "manifest.sqlite3"
 PUBLISH_QUEUE_PATH: Final[Path] = DATA_DIR / "manifests" / "publish_queue.sqlite3"
+RENDER_QUEUE_PATH: Final[Path] = DATA_DIR / "manifests" / "render_queue.json"
 APPROVED_SOURCES_PATH: Final[Path] = DATA_DIR / "approved_sources.json"
 STARTUP_LOG_PATH: Final[Path] = LOG_DIR / "startup.log"
 REDDIT_BACKGROUND_VIDEO_TEMPLATE_PATH: Final[Path] = DATA_DIR / "background_template.mp4"
@@ -163,13 +164,54 @@ ADVICE_LOCAL_BACKGROUND_VIDEO: Final[str] = os.getenv("ADVICE_LOCAL_BACKGROUND_V
 
 # Hook frame — static title card prepended to each video
 HOOK_FRAME_ENABLED: Final[bool] = _parse_bool_env(os.getenv("HOOK_FRAME_ENABLED", "true"))
-HOOK_FRAME_DURATION: Final[float] = float(os.getenv("HOOK_FRAME_DURATION", "2.0"))
+HOOK_FRAME_DURATION: Final[float] = float(os.getenv("HOOK_FRAME_DURATION", "1.0"))
 HOOK_FRAME_FONT_SIZE: Final[int] = int(os.getenv("HOOK_FRAME_FONT_SIZE", "52"))
+HOOK_FRAME_V2_FONT_SIZE: Final[int] = int(os.getenv("HOOK_FRAME_V2_FONT_SIZE", "90"))
 HOOK_FRAME_BG_COLOR: Final[str] = os.getenv("HOOK_FRAME_BG_COLOR", "0x0a0a0a")
 HOOK_FRAME_TEXT_COLOR: Final[str] = os.getenv("HOOK_FRAME_TEXT_COLOR", "white")
 HOOK_FRAME_ACCENT_COLOR: Final[str] = os.getenv("HOOK_FRAME_ACCENT_COLOR", "0xFF3B30")  # red accent bar
 HOOK_FRAME_FONT_FILE: Final[str] = os.getenv("HOOK_FRAME_FONT_FILE", "")  # path to .ttf, empty = ffmpeg default
 HOOK_FRAME_BRAND_LABEL: Final[str] = os.getenv("HOOK_FRAME_BRAND_LABEL", "")  # e.g. "MONEY UA" shown above hook text; empty = hidden
+
+# CTA bottom bar — subscribe overlay in the last N seconds of the video
+CTA_ENABLED: bool = os.getenv("CTA_ENABLED", "false").lower() == "true"
+CTA_DURATION: float = float(os.getenv("CTA_DURATION", "3.0"))
+CTA_FADE_IN: float = float(os.getenv("CTA_FADE_IN", "0.5"))
+CTA_SHARE_OVERLAY_PATH: str = os.getenv(
+    "CTA_SHARE_OVERLAY_PATH",
+    str(BASE_DIR / "data" / "assets" / "cta_share_gs.mp4"),
+)
+CTA_SHARE_OVERLAY_WIDTH: int = int(os.getenv("CTA_SHARE_OVERLAY_WIDTH", "1000"))
+CTA_SHARE_OVERLAY_Y: int = int(os.getenv("CTA_SHARE_OVERLAY_Y", "1050"))
+
+# --- Myth pipeline CTA assets (greenscreen overlays) ---
+CTA_SHARE_PATH: Final[str] = os.getenv(
+    "CTA_SHARE_PATH", str(DATA_DIR / "assets" / "share_ty.mp4")
+)
+CTA_SHARE_Y_OFFSET: Final[int] = int(os.getenv("CTA_SHARE_Y_OFFSET", "-785"))
+CTA_SHARE_Y_EXPR: Final[str] = os.getenv("CTA_SHARE_Y_EXPR", "main_h*4/5-overlay_h/2")
+CTA_SHARE_X_EXPR: Final[str] = os.getenv("CTA_SHARE_X_EXPR", "(main_w-overlay_w)/2")
+CTA_SHARE_START: Final[float] = float(os.getenv("CTA_SHARE_START", "10.0"))
+
+CTA_SUBSCRIBE_TIKTOK_PATH: Final[str] = os.getenv(
+    "CTA_SUBSCRIBE_TIKTOK_PATH", str(DATA_DIR / "assets" / "subscribe_tiktok.mp4")
+)
+CTA_SUBSCRIBE_YOUTUBE_PATH: Final[str] = os.getenv(
+    "CTA_SUBSCRIBE_YOUTUBE_PATH", str(DATA_DIR / "assets" / "subscribe_shorts.mp4")
+)
+CTA_SUBSCRIBE_INSTAGRAM_PATH: Final[str] = os.getenv(
+    "CTA_SUBSCRIBE_INSTAGRAM_PATH", str(DATA_DIR / "assets" / "subscribe_instagram.mp4")
+)
+CTA_SUBSCRIBE_Y_OFFSET: Final[int] = int(os.getenv("CTA_SUBSCRIBE_Y_OFFSET", "-680"))
+CTA_SUBSCRIBE_INSTAGRAM_Y_OFFSET: Final[int] = int(
+    os.getenv("CTA_SUBSCRIBE_INSTAGRAM_Y_OFFSET", "-560")
+)
+CTA_SUBSCRIBE_YOUTUBE_Y_OFFSET: Final[int] = int(
+    os.getenv("CTA_SUBSCRIBE_YOUTUBE_Y_OFFSET", "-580")
+)
+CTA_SUBSCRIBE_MAX_DURATION: Final[float] = float(
+    os.getenv("CTA_SUBSCRIBE_MAX_DURATION", "4.0")
+)
 
 # Hook frame V2 — dark left-bar layout (looks like a designer made it)
 # HOOK_FRAME_LAYOUT=v2 activates the new design; any other value = classic
@@ -180,6 +222,12 @@ HOOK_FRAME_CATEGORY: Final[str] = os.getenv("HOOK_FRAME_CATEGORY", "")
 HOOK_FRAME_CATEGORY_BG: Final[str] = os.getenv("HOOK_FRAME_CATEGORY_BG", "")
 # Pill text colour (dark brown works on yellow; override if needed)
 HOOK_FRAME_CATEGORY_FG: Final[str] = os.getenv("HOOK_FRAME_CATEGORY_FG", "0x78350F")
+HOOK_FRAME_SCRIM_OPACITY: Final[float] = float(
+    os.getenv("HOOK_FRAME_SCRIM_OPACITY", "0.45")
+)
+PART_BADGE_ENABLED: Final[bool] = _parse_bool_env(
+    os.getenv("PART_BADGE_ENABLED", "false")
+)
 
 # Advice pipeline — content plan
 CONTENT_PLAN_PATH: Final[Path] = DATA_DIR / "content_plan.json"
@@ -222,15 +270,24 @@ CHANNEL_PROFILES: Final[dict[str, dict]] = {
         "hook_accent": "0xFF3B30",
         "hook_brand": "",
         "series_categories": LAW_SERIES_CATEGORIES,
+        "highlight_color": "#FF3B30",
+        "exports_subdir": "dontpaniclaw_content_dir",
+        "myth_category_default": "ПРАВА",
     },
     "finance": {
         "label": "💰 MoneyUA",
         "plan_path": DATA_DIR / "content_plan_moneyua.json",
         "prompt_path": DATA_DIR / "prompts" / "script_prompt_finance.md",
-        "hook_bg": "0x0d1b3e",
-        "hook_accent": "0xFFD700",
-        "hook_brand": "MONEY UA",
+        "hook_bg": "0x0a0a0a",
+        "hook_accent": "0x00C853",
+        "hook_brand": "",
         "series_categories": FINANCE_SERIES_CATEGORIES,
+        "cta_overlay_path": str(DATA_DIR / "assets" / "cta_follow_trimmed.mp4"),
+        "cta_overlay_width": 380,
+        "cta_overlay_y": 100,
+        "highlight_color": "#FFD700",
+        "exports_subdir": "moneyua_content_dir",
+        "myth_category_default": "ФІНАНСИ",
     },
 }
 DEFAULT_CHANNEL: Final[str] = "law"
@@ -259,6 +316,8 @@ VOICE_SESSION_STORE_PATH: Final[Path] = DATA_DIR / "manifests" / "voice_sessions
 
 # Advice pipeline — output
 ADVICE_OUTPUT_DIR: Final[Path] = DATA_DIR / "advice"
+
+MYTH_DATA_DIR: Final[Path] = DATA_DIR / "myth"
 
 _TELEGRAM_RUNTIME_GROUP: Final[str] = "telegram"
 _TTS_RUNTIME_GROUP: Final[str] = "tts"

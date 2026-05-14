@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Черга{% endblock %}
+{% block heading %}📤 Черга публікацій{% endblock %}
+{% block content %}
+
+<!-- Toolbar -->
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+  {% for val, label, color in [('queued','В черзі','#818cf8'),('published','Опубліковано','#22c55e'),('failed','Помилка','#ef4444')] %}
+  <a href="/queue?status={{ val }}" style="display:flex;align-items:center;gap:10px;padding:12px 20px;border-radius:10px;text-decoration:none;transition:all .15s;
+    {% if filter_status == val %}background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);
+    {% else %}background:var(--bg-card);border:1px solid var(--border);{% endif %}">
+    <span style="font-size:20px;font-weight:700;color:{{ color }};">{{ stats[val] }}</span>
+    <span style="font-size:13px;color:var(--text-secondary);">{{ label }}</span>
+  </a>
+  {% endfor %}
+  <a href="/queue?status=all" style="display:flex;align-items:center;gap:10px;padding:12px 20px;border-radius:10px;text-decoration:none;background:var(--bg-card);border:1px solid var(--border);transition:all .15s;">
+    <span style="font-size:13px;color:var(--text-secondary);">Всі</span>
+  </a>
+</div>
+{% if stats.queued > 0 %}
+<button class="btn-success" style="font-size:13px;" onclick="bulkPublishAll(this)">
+  ✅ Всі опубліковано ({{ stats.queued }})
+</button>
+{% endif %}
+</div>
+
+{% if items %}
+<div class="grid gap-5" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+  {% for item in items %}
+  <div class="card-base overflow-hidden" id="qi-{{ item.item.asset_id }}">
+
+    <!-- Thumbnail -->
+    <div style="position:relative;aspect-ratio:9/16;max-height:220px;background:var(--bg-base);cursor:pointer;overflow:hidden;"
+         {% if item.video_exists %}onclick="openVideoModal('{{ item.item.clip_path | string | replace('/', '', 1) }}')"{% endif %}>
+      {% if item.thumb_exists %}
+      <img src="/media/thumb/{{ item.item.thumbnail_path | string | replace('/', '', 1) }}"
+           style="width:100%;height:100%;object-fit:cover;" loading="lazy"/>
+      {% else %}
+      <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);font-size:32px;">🎬</div>
+      {% endif %}
+      {% if item.video_exists %}
+      <div style="position:absolute;inset:0;background:rgba(0,0,0,0);display:flex;align-items:center;justify-content:center;transition:background .15s;"
+           onmouseenter="this.style.background='rgba(0,0,0,.35)';this.querySelector('span').style.opacity=1"
+           onmouseleave="this.style.background='rgba(0,0,0,0)';this.querySelector('span').style.opacity=0">
+        <span style="font-size:36px;opacity:0;transition:opacity .15s;">▶</span>
+      </div>
+      {% endif %}
+      <!-- Status badge -->
+      <div style="position:absolute;top:8px;right:8px;">
+        <span class="badge-status-{{ item.item.status }}" style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px;">{{ item.item.status }}</span>
+      </div>
+      <!-- Channel badge -->
+      <div style="position:absolute;top:8px;left:8px;">
+        <span class="badge-{{ item.channel_key }}" style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px;">{{ 'MoneyUA' if item.channel_key == 'finance' else 'Law' }}</span>
+      </div>
+    </div>
+
+    <!-- Info -->
+    <div style="padding:14px;">
+      <div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:4px;line-height:1.4;">
+        {{ item.item.title[:55] }}{% if item.item.title|length > 55 %}…{% endif %}
+      </div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:12px;">
+        {{ item.item.created_at[:10] }}{% if item.video_size_mb %} · {{ item.video_size_mb }} MB{% endif %}
+      </div>
+
+      <!-- Platform buttons -->
+      <div style="display:flex;gap:6px;margin-bottom:12px;">
+        <a href="https://www.tiktok.com/upload" target="_blank" style="display:flex;align-items:center;gap:5px;padding:5px 10px;border-radius:7px;background:rgba(255,255,255,.06);border:1px solid var(--border);font-size:11px;font-weight:600;color:var(--text-secondary);text-decoration:none;transition:all .15s;" onmouseenter="this.style.color='white'" onmouseleave="this.style.color=''">
+          <span>▶</span> TikTok
+        </a>
+        <a href="https://studio.youtube.com" target="_blank" style="display:flex;align-items:center;gap:5px;padding:5px 10px;border-radius:7px;background:rgba(255,255,255,.06);border:1px solid var(--border);font-size:11px;font-weight:600;color:var(--text-secondary);text-decoration:none;transition:all .15s;" onmouseenter="this.style.color='white'" onmouseleave="this.style.color=''">
+          <span>▶</span> YouTube
+        </a>
+      </div>
+
+      <!-- Actions -->
+      {% if item.item.status == 'queued' %}
+      <div style="display:flex;gap:6px;">
+        <button class="btn-success" style="flex:1;font-size:12px;"
+          hx-post="/api/queue/{{ item.item.asset_id }}/published"
+          hx-target="#qi-{{ item.item.asset_id }}"
+          hx-swap="outerHTML"
+          hx-confirm="Позначити як опубліковане?"
+        >✅ Опубліковано</button>
+        <button class="btn-danger" style="font-size:12px;"
+          hx-post="/api/queue/{{ item.item.asset_id }}/delete"
+          hx-target="#qi-{{ item.item.asset_id }}"
+          hx-swap="outerHTML"
+          hx-confirm="Видалити з черги?"
+        >🗑</button>
+      </div>
+      {% else %}
+      <div style="font-size:12px;color:var(--text-secondary);text-align:center;padding:4px 0;">
+        {{ '✅ Опубліковано' if item.item.status == 'published' else '❌ Помилка' }}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% else %}
+<div class="card-base">
+  <div class="empty-state">
+    <div class="icon">📭</div>
+    <div style="font-size:15px;font-weight:500;margin-bottom:6px;">Черга порожня</div>
+    <div style="font-size:13px;color:var(--text-secondary);">Відео з'являться тут після рендеру</div>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function bulkPublishAll(btn) {
+  if (!confirm('Позначити всі відео в черзі як опубліковані?')) return;
+  btn.disabled = true;
+  fetch('/api/queue/bulk/publish-all', {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+      showToast('✅ ' + data.count + ' відео позначено як опубліковані', 'success');
+      setTimeout(() => location.reload(), 800);
+    })
+    .catch(() => { btn.disabled = false; showToast('Помилка', 'error'); });
+}
+</script>
+{% endblock %}
